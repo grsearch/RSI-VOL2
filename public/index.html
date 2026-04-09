@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SOL RSI+量能 Monitor V2</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d1117;color:#e6edf3;font-family:'Consolas',monospace;font-size:13px}
+  header{background:#161b22;padding:12px 20px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:16px;color:#58a6ff}
+  .badge{padding:2px 8px;border-radius:4px;font-size:11px}
+  .badge.green{background:#1a4731;color:#3fb950}
+  .badge.red{background:#4d1c1c;color:#f85149}
+  .badge.gray{background:#21262d;color:#8b949e}
+  .badge.blue{background:#1a3a5c;color:#58a6ff}
+  .badge.yellow{background:#4d3800;color:#d29922}
+  main{padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px}
+  .card h2{font-size:13px;color:#8b949e;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse}
+  th{color:#8b949e;font-weight:normal;text-align:left;padding:4px 8px;border-bottom:1px solid #21262d;font-size:11px}
+  td{padding:5px 8px;border-bottom:1px solid #161b22;font-size:12px}
+  tr:hover td{background:#1c2128}
+  .buy{color:#3fb950} .sell{color:#f85149} .none{color:#8b949e}
+  .rsi-hi{color:#f85149} .rsi-mid{color:#e6edf3} .rsi-lo{color:#3fb950}
+  .vol-hi{color:#da8ee7} .vol-lo{color:#8b949e}
+  #ws-status{font-size:11px}
+  #log{grid-column:1/-1;max-height:200px;overflow-y:auto}
+  #log table td{font-size:12px}
+  .stats-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px}
+  .stat-box{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 12px;text-align:center}
+  .stat-box .val{font-size:18px;font-weight:bold;margin-bottom:2px}
+  .stat-box .lbl{font-size:10px;color:#8b949e}
+  .stat-box.profit .val{color:#3fb950}
+  .stat-box.loss   .val{color:#f85149}
+  .stat-box.neutral .val{color:#58a6ff}
+  @media(max-width:1100px){.stats-grid{grid-template-columns:repeat(4,1fr)}}
+  @media(max-width:700px){main{grid-template-columns:1fr}.stats-grid{grid-template-columns:repeat(2,1fr)}}
+  /* 退出原因标签 */
+  .exit-tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;white-space:nowrap}
+  .exit-panic{background:#4d1c1c;color:#f85149}
+  .exit-rsi{background:#3d2e00;color:#d29922}
+  .exit-tp{background:#1a4731;color:#3fb950}
+  .exit-sl{background:#4d1c1c;color:#f85149}
+  .exit-vol{background:#2d1b4e;color:#da8ee7}
+  .exit-fdv{background:#4d1c1c;color:#f85149}
+  .exit-exp{background:#21262d;color:#8b949e}
+  .exit-force{background:#21262d;color:#8b949e}
+  .exit-fail{background:#4d1c1c;color:#f85149}
+  .exit-hold{background:#21262d;color:#8b949e}
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 SOL RSI+量能 V2</h1>
+  <span id="mode-badge" class="badge blue">模式加载中...</span>
+  <span id="ws-status" class="badge gray">⚡ 连接中...</span>
+  <span id="token-count" class="badge gray">0 代币</span>
+  <span id="data-stats" class="badge gray">数据: -</span>
+</header>
+<main>
+  <!-- 统计 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>24小时统计</h2>
+    <div class="stats-grid">
+      <div class="stat-box neutral"><div class="val" id="stat-trades">-</div><div class="lbl">总交易</div></div>
+      <div class="stat-box neutral"><div class="val" id="stat-wins">-</div><div class="lbl">盈利</div></div>
+      <div class="stat-box neutral"><div class="val" id="stat-losses">-</div><div class="lbl">亏损</div></div>
+      <div class="stat-box neutral"><div class="val" id="stat-winrate">-%</div><div class="lbl">胜率</div></div>
+      <div class="stat-box neutral" id="stat-pnlsol-box"><div class="val" id="stat-pnlsol">-</div><div class="lbl">总PnL(SOL)</div></div>
+      <div class="stat-box neutral" id="stat-pnlpct-box"><div class="val" id="stat-pnlpct">-%</div><div class="lbl">平均PnL%</div></div>
+      <div class="stat-box neutral"><div class="val" id="stat-avgwin">-%</div><div class="lbl">平均赢利%</div></div>
+      <div class="stat-box neutral"><div class="val" id="stat-pf">-</div><div class="lbl">盈亏比</div></div>
+    </div>
+  </div>
+
+  <!-- 实时行情 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>实时行情</h2>
+    <table id="tbl-tokens">
+      <thead><tr>
+        <th>代币</th><th>合约</th><th>价格</th><th>RSI</th><th>prevRSI</th>
+        <th>Buy/Sell</th><th>信号</th><th>原因</th><th>K线数</th><th>状态</th><th>到期</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 交易日志 -->
+  <div class="card" id="log">
+    <h2>交易日志</h2>
+    <table id="tbl-log">
+      <thead><tr><th>时间</th><th>类型</th><th>代币</th><th>价格</th><th>原因</th><th>模式</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 成交记录 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>成交记录 <span id="pnl-summary" style="font-size:11px;color:#8b949e;margin-left:8px"></span></h2>
+    <table id="tbl-records">
+      <thead><tr><th>代币</th><th>买入SOL</th><th>卖出SOL</th><th>PnL(SOL)</th><th>PnL%</th><th>退出原因</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 报告 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>每日报告 <span style="font-size:11px;color:#8b949e">每天08:00(北京时间)自动生成</span></h2>
+    <div id="reports-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"></div>
+  </div>
+</main>
+
+<script>
+const rows   = {};
+const logMax = 100;
+
+function fmt(n, d=6){ return n==null?'-':Number(n).toFixed(d) }
+function fmtTime(ts){ return new Date(ts).toLocaleTimeString() }
+function rsiClass(r){ return r>70?'rsi-hi':r<30?'rsi-lo':'rsi-mid' }
+function volClass(b,s){ return b>s?'vol-hi':'vol-lo' }
+
+function connect(){
+  const ws = new WebSocket(`ws://${location.host}`);
+  document.getElementById('ws-status').textContent = '⚡ 连接中...';
+  document.getElementById('ws-status').className = 'badge gray';
+
+  ws.onopen = () => {
+    document.getElementById('ws-status').textContent = '✅ 已连接';
+    document.getElementById('ws-status').className = 'badge green';
+
+    fetch('/api/dashboard').then(r=>r.json()).then(d=>{
+      (d.tokens||[]).forEach(t => updateTokenRow(t));
+      document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
+      // DRY_RUN mode
+      const modeBadge = document.getElementById('mode-badge');
+      if (d.dryRun) {
+        modeBadge.textContent = '🔵 空跑模式';
+        modeBadge.className = 'badge blue';
+      } else {
+        modeBadge.textContent = '🔴 实盘模式';
+        modeBadge.className = 'badge red';
+      }
+    });
+    fetch('/api/trades').then(r=>r.json()).then(logs => {
+      logs.slice(0,50).reverse().forEach(addLogRow);
+    });
+    fetch('/api/trade-records').then(r=>r.json()).then(records=>{
+      records.slice(0,50).forEach(addRecordRow);
+      updatePnlSummary(records);
+      updateStats(records);
+    });
+    fetch('/api/reports').then(r=>r.json()).then(renderReports);
+    fetch('/api/data-stats').then(r=>r.json()).then(d=>{
+      document.getElementById('data-stats').textContent =
+        `数据: ${d.tickFiles}币 ${d.tradeCount}笔 ${d.signalCount}信号`;
+    });
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-status').textContent = '🔴 断开';
+    document.getElementById('ws-status').className = 'badge red';
+    setTimeout(connect, 2000);
+  };
+
+  ws.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'tick')         handleTick(d);
+    if (d.type === 'trade_log')    addLogRow(d);
+    if (d.type === 'trade_record') {
+      addRecordRow(d);
+      fetch('/api/trade-records').then(r=>r.json()).then(records => {
+        updatePnlSummary(records);
+        updateStats(records);
+      });
+    }
+    if (d.type === 'token_list')   handleTokenList(d.tokens);
+  };
+}
+
+function handleTick(d){
+  const tbody = document.querySelector('#tbl-tokens tbody');
+  let tr = document.getElementById('row-' + d.address);
+  if (!tr){
+    tr = document.createElement('tr');
+    tr.id = 'row-' + d.address;
+    tbody.prepend(tr);
+    rows[d.address] = true;
+  }
+  const sig = d.signal || 'none';
+  const rsi = d.rsi;
+  const addrShort = d.address ? d.address.slice(0,4)+'...'+d.address.slice(-4) : '-';
+  const gmgnUrl = `https://gmgn.ai/sol/token/${d.address}`;
+  const bv = d.volume?.buyVol ?? 0;
+  const sv = d.volume?.sellVol ?? 0;
+  const bsStr = (bv+sv) > 0 ? `${bv.toFixed(1)}/${sv.toFixed(1)}` : '-';
+
+  tr.innerHTML = `
+    <td>${d.symbol}</td>
+    <td><a href="${gmgnUrl}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:11px" title="${d.address}">${addrShort}</a></td>
+    <td>${fmt(d.price,8)}</td>
+    <td class="${rsiClass(rsi)}">${rsi==null?'预热':rsi.toFixed(2)}</td>
+    <td class="${rsiClass(d.prevRsi)}">${d.prevRsi==null?'-':d.prevRsi.toFixed(2)}</td>
+    <td class="${volClass(bv,sv)}" title="Buy/Sell SOL (${d.volume?.windowSec||30}s)">${bsStr}</td>
+    <td class="${sig.toLowerCase()}">${sig}</td>
+    <td style="color:#8b949e;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.reason||''}">${d.reason||''}</td>
+    <td>${d.closedCount??'-'}</td>
+    <td>${d.inPosition?'<span class="badge green">持仓</span>':'<span class="badge gray">观望</span>'}</td>
+    <td style="color:#8b949e;font-size:11px">${fmtTime(d.ts)}</td>
+  `;
+  updateCount();
+}
+
+function handleTokenList(tokens){
+  const addrs = new Set(tokens.map(t=>t.address));
+  Object.keys(rows).forEach(addr=>{
+    if(!addrs.has(addr)){
+      const el = document.getElementById('row-'+addr);
+      if(el) el.remove();
+      delete rows[addr];
+    }
+  });
+  updateCount();
+}
+
+function updateTokenRow(t){}
+
+function addLogRow(d){
+  const tbody = document.querySelector('#tbl-log tbody');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${fmtTime(d.ts)}</td>
+    <td class="${(d.type||'').toLowerCase()}">${d.type}</td>
+    <td>${d.symbol}</td>
+    <td>${fmt(d.price,8)}</td>
+    <td style="color:#8b949e;font-size:11px">${d.reason||''}</td>
+    <td>${d.dryRun?'<span class="badge blue" style="font-size:10px">空跑</span>':''}</td>
+  `;
+  tbody.prepend(tr);
+  while(tbody.children.length > logMax) tbody.removeChild(tbody.lastChild);
+}
+
+function addRecordRow(d){
+  const tbody = document.querySelector('#tbl-records tbody');
+  const tr = document.createElement('tr');
+  const p = d.pnlPct;
+  const pnlSolStr = d.pnlSol != null
+    ? (d.pnlSol >= 0 ? '+' : '') + d.pnlSol.toFixed(4)
+    : '-';
+  tr.innerHTML = `
+    <td>${d.symbol}</td>
+    <td>${d.solIn != null ? d.solIn.toFixed(4) : '-'}</td>
+    <td>${d.solOut != null ? d.solOut.toFixed(4) : '-'}</td>
+    <td class="${(d.pnlSol??0)>=0?'buy':'sell'}">${pnlSolStr}</td>
+    <td class="${p>=0?'buy':'sell'}">${p!=null?((p>=0?'+':'')+p.toFixed(2)+'%'):'-'}</td>
+    <td>${fmtExitReason(d.exitReason)}</td>
+  `;
+  tbody.prepend(tr);
+  while(tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
+}
+
+function fmtExitReason(reason) {
+  if (!reason) return '<span class="exit-tag exit-hold">持仓中</span>';
+  const r = reason;
+  // 提取括号内的具体数值
+  const detail = r.match(/\(([^)]*)\)/)?.[1] || '';
+
+  if (r.startsWith('RSI_PANIC'))
+    return `<span class="exit-tag exit-panic">RSI恐慌 ${detail}</span>`;
+  if (r.startsWith('RSI_CROSS_DOWN'))
+    return `<span class="exit-tag exit-rsi">RSI下穿70 ${detail}</span>`;
+  if (r.startsWith('TAKE_PROFIT'))
+    return `<span class="exit-tag exit-tp">止盈 ${detail}</span>`;
+  if (r.startsWith('STOP_LOSS'))
+    return `<span class="exit-tag exit-sl">止损 ${detail}</span>`;
+  if (r.startsWith('VOL_DECAY'))
+    return `<span class="exit-tag exit-vol">量能萎缩 ${detail}</span>`;
+  if (r.includes('FDV_TOO_LOW'))
+    return `<span class="exit-tag exit-fdv">FDV过低 ${detail}</span>`;
+  if (r.includes('EXPIRED'))
+    return `<span class="exit-tag exit-exp">到期退出</span>`;
+  if (r.includes('FORCED_EXIT'))
+    return `<span class="exit-tag exit-force">强制退出 ${detail}</span>`;
+  if (r.includes('SELL_FAILED'))
+    return `<span class="exit-tag exit-fail">卖出失败</span>`;
+  if (r.includes('SHUTDOWN'))
+    return `<span class="exit-tag exit-force">服务关闭</span>`;
+  if (r.includes('TRADE_DONE'))
+    return `<span class="exit-tag exit-hold">交易完成</span>`;
+  // 兜底
+  return `<span class="exit-tag exit-hold" title="${r}">${r}</span>`;
+}
+
+function updateCount(){
+  document.getElementById('token-count').textContent = Object.keys(rows).length + ' 代币';
+}
+
+function updatePnlSummary(records) {
+  const closed = records.filter(r => r.exitAt);
+  if (!closed.length) return;
+  const totalSol = closed.reduce((s, r) => s + (r.pnlSol ?? 0), 0);
+  const wins  = closed.filter(r => (r.pnlSol ?? 0) > 0).length;
+  const el = document.getElementById('pnl-summary');
+  if (el) el.textContent =
+    `${closed.length}笔 | 胜${wins} 负${closed.length-wins} | ${totalSol>=0?'+':''}${totalSol.toFixed(4)} SOL`;
+}
+
+function updateStats(records) {
+  const closed = records.filter(r => r.exitAt);
+  const total  = closed.length;
+  const wins   = closed.filter(r => (r.pnlSol ?? 0) > 0);
+  const losses = closed.filter(r => (r.pnlSol ?? 0) <= 0);
+  const winrate = total > 0 ? (wins.length / total * 100) : 0;
+  const totalSol = closed.reduce((s, r) => s + (r.pnlSol ?? 0), 0);
+  const avgPct   = total > 0 ? closed.reduce((s, r) => s + (r.pnlPct ?? 0), 0) / total : 0;
+  const avgWin   = wins.length > 0 ? wins.reduce((s, r) => s + (r.pnlPct ?? 0), 0) / wins.length : 0;
+  const avgLoss  = losses.length > 0 ? losses.reduce((s, r) => s + (r.pnlPct ?? 0), 0) / losses.length : 0;
+  const pf       = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0;
+
+  document.getElementById('stat-trades').textContent   = total;
+  document.getElementById('stat-wins').textContent     = wins.length;
+  document.getElementById('stat-losses').textContent   = losses.length;
+  document.getElementById('stat-winrate').textContent  = total > 0 ? winrate.toFixed(1)+'%' : '-%';
+
+  const solEl  = document.getElementById('stat-pnlsol');
+  const solBox = document.getElementById('stat-pnlsol-box');
+  solEl.textContent = (totalSol >= 0 ? '+' : '') + totalSol.toFixed(4);
+  solBox.className  = 'stat-box ' + (totalSol > 0 ? 'profit' : totalSol < 0 ? 'loss' : 'neutral');
+
+  const pctEl  = document.getElementById('stat-pnlpct');
+  const pctBox = document.getElementById('stat-pnlpct-box');
+  pctEl.textContent = total > 0 ? (avgPct>=0?'+':'')+avgPct.toFixed(2)+'%' : '-%';
+  pctBox.className  = 'stat-box ' + (avgPct > 0 ? 'profit' : avgPct < 0 ? 'loss' : 'neutral');
+
+  document.getElementById('stat-avgwin').textContent = wins.length > 0 ? '+'+avgWin.toFixed(2)+'%' : '-%';
+  document.getElementById('stat-avgwin').parentElement.className = 'stat-box ' + (avgWin > 0 ? 'profit' : 'neutral');
+
+  document.getElementById('stat-pf').textContent = total > 0 ? pf.toFixed(2) : '-';
+  document.getElementById('stat-pf').parentElement.className = 'stat-box ' + (pf >= 1 ? 'profit' : pf > 0 ? 'loss' : 'neutral');
+
+  const wrBox = document.getElementById('stat-winrate').parentElement;
+  wrBox.className = 'stat-box ' + (winrate >= 50 ? 'profit' : winrate > 0 ? 'loss' : 'neutral');
+  document.getElementById('stat-wins').parentElement.className   = 'stat-box ' + (wins.length > 0 ? 'profit' : 'neutral');
+  document.getElementById('stat-losses').parentElement.className = 'stat-box ' + (losses.length > 0 ? 'loss' : 'neutral');
+}
+
+function renderReports(reports) {
+  const el = document.getElementById('reports-list');
+  if (!el) return;
+  if (!reports.length) { el.innerHTML = '<span style="color:#8b949e;font-size:12px">暂无报告</span>'; return; }
+  el.innerHTML = reports.map(r =>
+    `<a href="${r.url}" download style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;
+      background:#21262d;border:1px solid #30363d;border-radius:6px;color:#58a6ff;
+      text-decoration:none;font-size:12px">
+      📥 ${r.date} <span style="color:#8b949e">(${(r.size/1024).toFixed(1)}KB)</span>
+    </a>`
+  ).join('');
+}
+
+connect();
+</script>
+</body>
+</html>
