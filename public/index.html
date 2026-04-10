@@ -295,13 +295,15 @@ function addLogRow(d){
 
 function fmtBuyReason(reason) {
   if (!reason) return '-';
-  // RSI_CROSS_UP_30(25.3→30.1)+BUY≥1.2xSELL(1.44>=0.96,1.5x,60%,30s)
-  const rsiMatch = reason.match(/RSI_CROSS_UP_30\(([^)]+)\)/);
+  // RSI_OVERSOLD(28.5<35)+BUY≥2.0xSELL(1.44>=0.72,2.0x,67%,30s)
+  const rsiMatch = reason.match(/RSI_OVERSOLD\(([^)]+)\)/);
   const volMatch = reason.match(/BUY≥[\d.]+xSELL\(([^)]+)\)/);
+  const crossMatch = reason.match(/RSI_CROSS_UP_30\(([^)]+)\)/);
   const noDataMatch = reason.includes('VOL_NO_DIRECTION_DATA');
 
   let parts = [];
-  if (rsiMatch) parts.push(`RSI:${rsiMatch[1]}`);
+  if (rsiMatch) parts.push(`RSI:${rsiMatch[1].split('<')[0]}`);
+  if (crossMatch) parts.push(`RSI:${crossMatch[1]}`);
   if (volMatch) {
     const volParts = volMatch[1].split(',');
     if (volParts.length >= 2) {

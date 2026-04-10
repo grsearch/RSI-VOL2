@@ -10,8 +10,7 @@
 //   2. 止损检查独立于 K 线周期，每个 tick 都检查（快速止损）
 //
 // 策略：
-//   BUY : RSI(7) 上穿 30（prevRsi<30 → rsi≥30）+ buyVol ≥ 1.2×sellVol
-//         上穿时立刻检查量能，不符合就放弃该次穿越
+//   BUY : RSI(7) < 35（超卖区）+ buyVol ≥ 2.0×sellVol
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
 const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
@@ -266,29 +265,22 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
-  // ★ RSI 上穿 30：prevRsi < 30 且 rsiRealtime >= 30
-  // ★ 同时检查量能：buyVol >= 1.2 × sellVol
-  // ★ 不符合就放弃这次穿越（标记 lastBuyCandle，同根K线不再检查）
+  // ★ RSI < 35（超卖区）+ buyVol >= 2.0 × sellVol
+  // ★ 每根K线检查一次，只要在超卖区就持续检查量能
   if (!tokenState.inPosition) {
-    if (prevRsi < RSI_BUY && rsiRealtime >= RSI_BUY && lastCandleTs !== lastBuyCandle) {
-      // RSI 上穿 30，立刻检查量能
+    if (rsiRealtime < RSI_BUY && lastCandleTs !== lastBuyCandle) {
       const volCheck = checkBuyVolume(closedCandles, null);
       volumeInfo.buyVol  = volCheck.buyVol;
       volumeInfo.sellVol = volCheck.sellVol;
       volumeInfo.buyRatio = volCheck.ratio;
 
-      // 无论量能是否通过，都标记这根K线，防止同根反复触发
-      tokenState._lastBuyCandle = lastCandleTs;
-
       if (volCheck.pass) {
+        tokenState._lastBuyCandle = lastCandleTs;
         updateState();
         return { rsi: rsiRealtime, prevRsi, signal: 'BUY',
-                 reason: `RSI_CROSS_UP_30(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})+${volCheck.reason}`, volume: volumeInfo };
+                 reason: `RSI_OVERSOLD(${rsiRealtime.toFixed(1)}<${RSI_BUY})+${volCheck.reason}`, volume: volumeInfo };
       }
-      // 量能不达标，放弃此次穿越
-      updateState();
-      return { rsi: rsiRealtime, prevRsi, signal: null,
-               reason: `RSI_CROSS_UP_30_VOL_REJECT(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})+${volCheck.reason}`, volume: volumeInfo };
+      // 量能不达标，不标记 lastBuyCandle，下根K线继续检查
     }
   }
 
