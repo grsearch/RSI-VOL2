@@ -11,6 +11,7 @@ const reporter  = require('./reporter');
 const wsHub     = require('./wsHub');
 const dataStore = require('./dataStore');
 const heliusWs  = require('./heliusWs');
+const birdeye   = require('./birdeye');
 
 const webhookRouter   = require('./routes/webhook');
 const dashboardRouter = require('./routes/dashboard');
@@ -28,7 +29,6 @@ app.use('/api',     dashboardRouter);
 
 app.get('/api/reports', (_req, res) => res.json(reporter.listReports()));
 
-// 回测 API（通过 HTTP 触发回测）
 app.get('/api/backtest/data', (_req, res) => {
   const files = dataStore.listTickFiles();
   const trades = dataStore.loadTrades();
@@ -40,12 +40,24 @@ app.get('/api/backtest/data', (_req, res) => {
   });
 });
 
+// Helius WS 状态 API
+app.get('/api/helius-stats', (_req, res) => {
+  res.json(heliusWs.getStats());
+});
+
+// Birdeye WS 状态 API
+app.get('/api/birdeye-status', (_req, res) => {
+  res.json({
+    wsConnected: birdeye.priceStream.isConnected(),
+  });
+});
+
 // ── 服务器 ────────────────────────────────────────────────────────
 const server = http.createServer(app);
 wsHub.init(server);
 
 server.listen(PORT, () => {
-  logger.info('🚀 SOL RSI+量能 Monitor V2 启动，端口 %d', PORT);
+  logger.info('🚀 SOL RSI+量能 Monitor V3 启动，端口 %d', PORT);
   logger.info('   模式: %s', DRY_RUN ? '🔵 空跑(DRY_RUN)' : '🔴 实盘(LIVE)');
   logger.info('   K线=%ds  轮询=%ds  RSI周期=%s  买≤%s  卖≥%s  恐慌>%s',
     process.env.KLINE_INTERVAL_SEC || 15,
@@ -62,6 +74,33 @@ server.listen(PORT, () => {
     process.env.STOP_LOSS_PCT      || '-10',
     process.env.SKIP_FIRST_CANDLES || '8');
 
+  // 连接信息
+  const birdeyeKey = process.env.BIRDEYE_API_KEY || '';
+  logger.info('   Birdeye: %s (B-05 WS 实时价格)',
+    birdeyeKey ? '✅ API Key 已配置' : '⚠️ 未配置');
+
+  const heliusLaser = process.env.HELIUS_LASERSTREAM_URL || '';
+  const heliusGK    = process.env.HELIUS_GATEKEEPER_URL || '';
+  const heliusWss   = process.env.HELIUS_WSS_URL || '';
+  const heliusKey   = process.env.HELIUS_API_KEY || '';
+  const heliusRpc   = process.env.HELIUS_RPC_URL || '';
+
+  if (heliusLaser) {
+    logger.info('   Helius: ✅ LaserStream（shred 级延迟）');
+  } else if (heliusWss) {
+    logger.info('   Helius: ✅ Enhanced WebSocket');
+  } else if (heliusKey || heliusRpc.includes('api-key=')) {
+    logger.info('   Helius: ✅ 标准 WebSocket');
+  } else {
+    logger.info('   Helius: ⚠️ 未配置，量能退化为 tick count');
+  }
+
+  if (heliusGK) {
+    logger.info('   Helius RPC: ✅ Gatekeeper Beta（最低延迟发单）');
+  } else if (heliusRpc) {
+    logger.info('   Helius RPC: ✅ 标准 RPC');
+  }
+
   if (!DRY_RUN) {
     logger.info('   Jupiter: Ultra API  %s  Key=%s',
       process.env.JUPITER_API_URL || 'https://api.jup.ag',
@@ -70,12 +109,11 @@ server.listen(PORT, () => {
     logger.info('   📁 数据目录: %s', process.env.DRY_RUN_DATA_DIR || './data');
   }
 
-  // Helius WS 状态
-  const heliusKey = process.env.HELIUS_API_KEY || '';
-  const heliusRpc = process.env.HELIUS_RPC_URL || '';
-  const hasHelius = heliusKey || heliusRpc.includes('api-key=');
-  logger.info('   Helius WS: %s（链上成交量+买卖方向）',
-    hasHelius ? '✅ 已配置' : '⚠️ 未配置，量能退化为 tick count');
+  logger.info('');
+  logger.info('   ⚡ 止损路径: BirdeyeWS(1s价格) → 本地判断 → 立即卖出（目标<500ms）');
+  logger.info('   📊 RSI路径:  BirdeyeWS + 轮询兜底 → K线聚合 → RSI信号');
+  logger.info('   📈 量能路径: HeliusWS(链上交易) → buyVol/sellVol → 买入确认');
+  logger.info('');
 
   monitor.start();
   reporter.scheduleDaily(() => monitor.getAllTradeRecords());

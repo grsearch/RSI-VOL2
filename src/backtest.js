@@ -49,34 +49,67 @@ function runBacktest(ticks, params) {
 
   if (!ticks || ticks.length === 0) return null;
 
-  // 构建K线
+  // 构建K线（V3：区分价格 tick 和链上交易 tick）
+  // 价格 tick (source='price' 或无 source 且无 solAmount)：构成 OHLC
+  // 链上 tick (source='chain' 或有 solAmount)：只贡献 volume/buyVolume/sellVolume
   const intervalMs = klineSec * 1000;
   const candles    = [];
   let currentCandle = null;
 
   for (const tick of ticks) {
     const bucket = Math.floor(tick.ts / intervalMs) * intervalMs;
+    // 判断是否为链上交易 tick
+    const isChainTick = tick.source === 'chain' || (tick.solAmount && tick.source !== 'price');
+
     if (!currentCandle || currentCandle.openTime !== bucket) {
       if (currentCandle) candles.push(currentCandle);
-      currentCandle = {
-        openTime: bucket, closeTime: bucket + intervalMs,
-        open: tick.price, high: tick.price, low: tick.price, close: tick.price,
-        volume: tick.solAmount || 1,
-        buyVolume: tick.isBuy ? (tick.solAmount || 1) : 0,
-        sellVolume: !tick.isBuy ? (tick.solAmount || 1) : 0,
-        tickCount: 1,
-      };
+      if (isChainTick) {
+        currentCandle = {
+          openTime: bucket, closeTime: bucket + intervalMs,
+          open: null, high: null, low: null, close: null,
+          volume: tick.solAmount || 0,
+          buyVolume: tick.isBuy ? (tick.solAmount || 0) : 0,
+          sellVolume: !tick.isBuy ? (tick.solAmount || 0) : 0,
+          tickCount: 1,
+        };
+      } else {
+        currentCandle = {
+          openTime: bucket, closeTime: bucket + intervalMs,
+          open: tick.price, high: tick.price, low: tick.price, close: tick.price,
+          volume: 0,
+          buyVolume: 0,
+          sellVolume: 0,
+          tickCount: 1,
+        };
+      }
     } else {
-      if (tick.price > currentCandle.high) currentCandle.high = tick.price;
-      if (tick.price < currentCandle.low)  currentCandle.low  = tick.price;
-      currentCandle.close = tick.price;
-      currentCandle.volume += (tick.solAmount || 1);
-      currentCandle.buyVolume += (tick.isBuy ? (tick.solAmount || 1) : 0);
-      currentCandle.sellVolume += (!tick.isBuy ? (tick.solAmount || 1) : 0);
-      currentCandle.tickCount++;
+      if (isChainTick) {
+        currentCandle.volume += (tick.solAmount || 0);
+        currentCandle.buyVolume += (tick.isBuy ? (tick.solAmount || 0) : 0);
+        currentCandle.sellVolume += (!tick.isBuy ? (tick.solAmount || 0) : 0);
+        currentCandle.tickCount++;
+      } else {
+        if (currentCandle.open === null) {
+          currentCandle.open = tick.price;
+          currentCandle.high = tick.price;
+          currentCandle.low  = tick.price;
+          currentCandle.close = tick.price;
+        } else {
+          if (tick.price > currentCandle.high) currentCandle.high = tick.price;
+          if (tick.price < currentCandle.low)  currentCandle.low  = tick.price;
+          currentCandle.close = tick.price;
+        }
+        currentCandle.tickCount++;
+      }
     }
   }
   if (currentCandle) candles.push(currentCandle);
+
+  // 过滤掉没有价格数据的 K 线（V3 修复）
+  const validCandles = candles.filter(c => c.open !== null && c.close !== null);
+  // 替换 candles 引用（后续代码使用 candles 变量名不变）
+  candles.length = 0;
+  candles.push(...validCandles);
 
   if (candles.length < rsiPeriod + 2) return null;
 

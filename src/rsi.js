@@ -1,8 +1,16 @@
 'use strict';
-// src/rsi.js — RSI 计算 + 量能过滤 + BUY/SELL 信号逻辑
+// src/rsi.js — RSI 计算 + 量能过滤 + BUY/SELL 信号逻辑 (V3)
 //
-// V2 策略（15秒K线 + 1秒轮询）：
-//   BUY : RSI(7) 上穿 30 + 滚动窗口内 buyVolume > sellVolume
+// V3 修复：
+//   1. buildCandles 区分「价格 tick」和「链上交易 tick」
+//      - 价格 tick（来自 Birdeye WS/HTTP，USD 计价）→ 构成 OHLC
+//      - 链上 tick（来自 Helius WS，SOL 计价） → 只贡献 volume/buyVolume/sellVolume
+//      - 解决了 V2 中 SOL 价格和 USD 价格混入同一数组导致 RSI 错乱的致命 BUG
+//
+//   2. 止损检查独立于 K 线周期，每个 tick 都检查（快速止损）
+//
+// 策略：
+//   BUY : RSI(7) ≤ 30（超卖区） + 窗口内 buyVolume > sellVolume
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
 const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
@@ -13,7 +21,7 @@ const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 
 // 量能参数
 const VOL_ENABLED         = (process.env.VOL_ENABLED || 'true') === 'true';
-const VOL_WINDOW_SEC      = parseInt(process.env.VOL_WINDOW_SEC       || '30', 10); // 买入确认窗口（秒），30秒=2根K线
+const VOL_WINDOW_SEC      = parseInt(process.env.VOL_WINDOW_SEC       || '30', 10);
 const VOL_EXIT_CONSECUTIVE = parseInt(process.env.VOL_EXIT_CONSECUTIVE || '2', 10);
 const VOL_EXIT_RATIO      = parseFloat(process.env.VOL_EXIT_RATIO     || '1.0');
 const VOL_EXIT_LOOKBACK   = parseInt(process.env.VOL_EXIT_LOOKBACK    || '4', 10);
@@ -63,21 +71,11 @@ function stepRSI(avgGain, avgLoss, lastClose, newPrice, period = RSI_PERIOD) {
 
 // ── 量能检测 ─────────────────────────────────────────────────────
 
-/**
- * 检查买入时的量能条件：
- *   滚动窗口（VOL_WINDOW_SEC 秒）内的 buyVolume > sellVolume
- *
- * @param {Object[]} closedCandles - 已收盘K线数组
- * @param {Object|null} currentCandle - 当前正在形成的K线
- * @returns {{ pass: boolean, reason: string, buyVol: number, sellVol: number, ratio: number }}
- */
 function checkBuyVolume(closedCandles, currentCandle) {
   if (!VOL_ENABLED) return { pass: true, reason: 'VOL_DISABLED', buyVol: 0, sellVol: 0, ratio: 0 };
 
-  // 回看K线数 = 窗口秒数 / K线秒数，至少1根
   const windowBars = Math.max(1, Math.ceil(VOL_WINDOW_SEC / KLINE_SEC));
 
-  // 收集窗口内的K线（已收盘 + 当前未收盘）
   const allCandles = [...closedCandles];
   if (currentCandle) allCandles.push(currentCandle);
 
@@ -85,7 +83,6 @@ function checkBuyVolume(closedCandles, currentCandle) {
     return { pass: false, reason: 'VOL_INSUFFICIENT_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
   }
 
-  // 取最近 windowBars 根K线
   const windowCandles = allCandles.slice(-windowBars);
 
   let totalBuy  = 0;
@@ -98,16 +95,11 @@ function checkBuyVolume(closedCandles, currentCandle) {
   const total = totalBuy + totalSell;
   const ratio = total > 0 ? totalBuy / total : 0;
 
-  // 没有链上方向数据（Helius 未连接时 buyVolume/sellVolume 全为0）
+  // 没有链上方向数据时放行，退化为纯 RSI
   if (total === 0) {
-    return {
-      pass: true,  // 无方向数据时放行，退化为纯 RSI
-      reason: 'VOL_NO_DIRECTION_DATA',
-      buyVol: 0, sellVol: 0, ratio: 0,
-    };
+    return { pass: true, reason: 'VOL_NO_DIRECTION_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
   }
 
-  // 核心条件：buy > sell
   if (totalBuy > totalSell) {
     return {
       pass: true,
@@ -123,19 +115,12 @@ function checkBuyVolume(closedCandles, currentCandle) {
   };
 }
 
-/**
- * 检查持仓期间的量能萎缩出场条件
- * @param {Object[]} closedCandles - 已收盘K线数组
- * @param {Object} tokenState - token状态
- * @returns {{ shouldExit: boolean, reason: string }}
- */
 function checkVolumeDecay(closedCandles, tokenState) {
   if (!VOL_ENABLED) return { shouldExit: false, reason: '' };
   if (closedCandles.length < VOL_EXIT_LOOKBACK + VOL_EXIT_CONSECUTIVE) {
     return { shouldExit: false, reason: 'INSUFFICIENT_DATA' };
   }
 
-  // 计算均量（不含最近的 VOL_EXIT_CONSECUTIVE 根）
   const avgEnd = closedCandles.length - VOL_EXIT_CONSECUTIVE;
   const avgStart = Math.max(0, avgEnd - VOL_EXIT_LOOKBACK);
   const avgCandles = closedCandles.slice(avgStart, avgEnd);
@@ -143,7 +128,6 @@ function checkVolumeDecay(closedCandles, tokenState) {
 
   if (avgVol <= 0) return { shouldExit: false, reason: 'AVG_VOL_ZERO' };
 
-  // 检查最近 N 根是否都低于阈值
   const recentCandles = closedCandles.slice(-VOL_EXIT_CONSECUTIVE);
   const allDecayed = recentCandles.every(c => (c.volume || 0) < avgVol * VOL_EXIT_RATIO);
 
@@ -158,6 +142,30 @@ function checkVolumeDecay(closedCandles, tokenState) {
   return { shouldExit: false, reason: '' };
 }
 
+// ── 快速止损检查（独立于 K 线，每个 tick 调用） ──────────────────
+
+/**
+ * 快速止损/止盈检查，不依赖 RSI，直接看价格偏离
+ * @returns {{ shouldExit: boolean, reason: string }}
+ */
+function checkStopLoss(currentPrice, tokenState) {
+  if (!tokenState.inPosition || !tokenState.position?.entryPriceUsd) {
+    return { shouldExit: false, reason: '' };
+  }
+
+  const pnl = (currentPrice - tokenState.position.entryPriceUsd)
+            / tokenState.position.entryPriceUsd * 100;
+
+  if (pnl >= TAKE_PROFIT_PCT) {
+    return { shouldExit: true, reason: `TAKE_PROFIT(+${pnl.toFixed(1)}%≥${TAKE_PROFIT_PCT}%)` };
+  }
+  if (pnl <= STOP_LOSS_PCT) {
+    return { shouldExit: true, reason: `STOP_LOSS(${pnl.toFixed(1)}%≤${STOP_LOSS_PCT}%)` };
+  }
+
+  return { shouldExit: false, reason: '', pnl };
+}
+
 // ── 主信号函数 ─────────────────────────────────────────────────────
 
 function evaluateSignal(closedCandles, realtimePrice, tokenState) {
@@ -166,7 +174,6 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
     return { rsi: NaN, prevRsi: NaN, signal: null, reason: 'warming_up', volume: {} };
   }
 
-  // 跳过前N根K线（噪音过滤）
   if (closedCandles.length < SKIP_FIRST_CANDLES) {
     return { rsi: NaN, prevRsi: NaN, signal: null, reason: `skip_first(${closedCandles.length}/${SKIP_FIRST_CANDLES})`, volume: {} };
   }
@@ -199,7 +206,7 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
     tokenState._prevRsiTs       = nowMs;
   };
 
-  // 当前窗口的量能信息（用于广播）
+  // 量能信息
   const latestCandle = closedCandles[len - 1];
   const windowBars = Math.max(1, Math.ceil(VOL_WINDOW_SEC / KLINE_SEC));
   const windowCandles = closedCandles.slice(-windowBars);
@@ -211,7 +218,7 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   const winTotal = winBuy + winSell;
   const volumeInfo = {
     currentVol: latestCandle.volume || 0,
-    buyVol: winBuy,
+    buyVol:  winBuy,
     sellVol: winSell,
     buyRatio: winTotal > 0 ? winBuy / winTotal : 0,
     windowSec: VOL_WINDOW_SEC,
@@ -236,23 +243,15 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
                reason: `RSI_CROSS_DOWN_70(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})`, volume: volumeInfo };
     }
 
-    // 3. 止盈 / 止损
-    if (tokenState.position && tokenState.position.entryPriceUsd) {
-      const pnl = (realtimePrice - tokenState.position.entryPriceUsd)
-                / tokenState.position.entryPriceUsd * 100;
-      if (pnl >= TAKE_PROFIT_PCT) {
-        updateState();
-        return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
-                 reason: `TAKE_PROFIT(+${pnl.toFixed(1)}%≥${TAKE_PROFIT_PCT}%)`, volume: volumeInfo };
-      }
-      if (pnl <= STOP_LOSS_PCT) {
-        updateState();
-        return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
-                 reason: `STOP_LOSS(${pnl.toFixed(1)}%≤${STOP_LOSS_PCT}%)`, volume: volumeInfo };
-      }
+    // 3. 止盈 / 止损（也在 evaluateSignal 中保留，双重保险）
+    const sl = checkStopLoss(realtimePrice, tokenState);
+    if (sl.shouldExit) {
+      updateState();
+      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+               reason: sl.reason, volume: volumeInfo };
     }
 
-    // 4. 量能萎缩出场（新增）
+    // 4. 量能萎缩出场
     const volDecay = checkVolumeDecay(closedCandles, tokenState);
     if (volDecay.shouldExit) {
       updateState();
@@ -262,13 +261,10 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
-  // 方案B：RSI 处于超卖区间（≤30） + 窗口内 buyVolume > sellVolume → 买入
-  //   逻辑：价格在超卖区 + 资金开始净流入 = 入场
-  //   每根K线只检查一次（防抖）
   if (!tokenState.inPosition) {
     if (rsiRealtime <= RSI_BUY && lastCandleTs !== lastBuyCandle) {
       const volCheck = checkBuyVolume(closedCandles, null);
-      volumeInfo.buyVol = volCheck.buyVol;
+      volumeInfo.buyVol  = volCheck.buyVol;
       volumeInfo.sellVol = volCheck.sellVol;
       volumeInfo.buyRatio = volCheck.ratio;
 
@@ -278,7 +274,6 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
         return { rsi: rsiRealtime, prevRsi, signal: 'BUY',
                  reason: `RSI_OVERSOLD(${rsiRealtime.toFixed(1)}≤${RSI_BUY})+${volCheck.reason}`, volume: volumeInfo };
       }
-      // RSI 在超卖区但 buy ≤ sell，继续等待，不标记 lastBuyCandle（下根K线再检查）
     }
   }
 
@@ -286,16 +281,20 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   return { rsi: rsiRealtime, prevRsi, signal: null, reason: isStale ? 'rsi_rebase' : '', volume: volumeInfo };
 }
 
-// ── K线聚合（增强：加入 volume 统计） ─────────────────────────────
+// ── K线聚合（V3：分离价格 tick 和链上交易 tick） ─────────────────
+//
+// tick 格式（两种来源共存于同一数组，用 source 字段区分）：
+//
+//   价格 tick（Birdeye WS/HTTP）:
+//     { price: USD价格, ts, source: 'price' }
+//     → 构成 OHLC
+//
+//   链上交易 tick（Helius WS）:
+//     { price: 忽略(SOL计价), ts, solAmount, isBuy, source: 'chain' }
+//     → 只贡献 volume / buyVolume / sellVolume
+//     → 不参与 OHLC（单位不同！）
+//
 
-/**
- * 把 ticks 聚合成 OHLCV K线。
- * tick 格式：{ price, ts, solAmount?, isBuy? }
- *   solAmount: 该笔交易的 SOL 金额（可选，用于量能计算）
- *   isBuy: 是否为买入（可选，用于买压比计算）
- *
- * 如果没有 solAmount，volume 退化为 tick count。
- */
 function buildCandles(ticks, intervalSec = KLINE_SEC) {
   if (!ticks || ticks.length === 0) return { closed: [], current: null };
 
@@ -305,28 +304,69 @@ function buildCandles(ticks, intervalSec = KLINE_SEC) {
 
   for (const tick of ticks) {
     const bucket = Math.floor(tick.ts / intervalMs) * intervalMs;
+
+    const isChainTick = tick.source === 'chain';
+
     if (!current || current.openTime !== bucket) {
+      // 新 K 线
       if (current) candles.push(current);
-      current = {
-        openTime  : bucket,
-        closeTime : bucket + intervalMs,
-        open      : tick.price,
-        high      : tick.price,
-        low       : tick.price,
-        close     : tick.price,
-        volume    : tick.solAmount || 1,      // SOL 成交额或 tick count
-        buyVolume : (tick.isBuy ? (tick.solAmount || 1) : 0),
-        sellVolume: (!tick.isBuy ? (tick.solAmount || 1) : 0),
-        tickCount : 1,
-      };
+
+      if (isChainTick) {
+        // 链上 tick 开始一根新K线，但没有价格数据
+        // 创建空价格K线，等下一个价格 tick 填入
+        current = {
+          openTime:   bucket,
+          closeTime:  bucket + intervalMs,
+          open:       null,    // 等待价格 tick 填入
+          high:       null,
+          low:        null,
+          close:      null,
+          volume:     tick.solAmount || 0,
+          buyVolume:  tick.isBuy  ? (tick.solAmount || 0) : 0,
+          sellVolume: !tick.isBuy ? (tick.solAmount || 0) : 0,
+          tickCount:  1,
+          priceTickCount: 0,
+        };
+      } else {
+        // 价格 tick 开始新K线
+        current = {
+          openTime:   bucket,
+          closeTime:  bucket + intervalMs,
+          open:       tick.price,
+          high:       tick.price,
+          low:        tick.price,
+          close:      tick.price,
+          volume:     0,          // volume 只来自链上交易
+          buyVolume:  0,
+          sellVolume: 0,
+          tickCount:  1,
+          priceTickCount: 1,
+        };
+      }
     } else {
-      if (tick.price > current.high) current.high = tick.price;
-      if (tick.price < current.low)  current.low  = tick.price;
-      current.close = tick.price;
-      current.volume    += (tick.solAmount || 1);
-      current.buyVolume += (tick.isBuy ? (tick.solAmount || 1) : 0);
-      current.sellVolume+= (!tick.isBuy ? (tick.solAmount || 1) : 0);
-      current.tickCount++;
+      // 同一根 K 线内追加
+      if (isChainTick) {
+        // 链上 tick：只更新 volume
+        current.volume     += (tick.solAmount || 0);
+        current.buyVolume  += tick.isBuy  ? (tick.solAmount || 0) : 0;
+        current.sellVolume += !tick.isBuy ? (tick.solAmount || 0) : 0;
+        current.tickCount++;
+      } else {
+        // 价格 tick：更新 OHLC
+        if (current.open === null) {
+          // 这根K线之前只有链上 tick，现在才拿到价格
+          current.open  = tick.price;
+          current.high  = tick.price;
+          current.low   = tick.price;
+          current.close = tick.price;
+        } else {
+          if (tick.price > current.high) current.high = tick.price;
+          if (tick.price < current.low)  current.low  = tick.price;
+          current.close = tick.price;
+        }
+        current.tickCount++;
+        current.priceTickCount++;
+      }
     }
   }
 
@@ -341,14 +381,23 @@ function buildCandles(ticks, intervalSec = KLINE_SEC) {
   return { closed: candles, current };
 }
 
+/**
+ * 过滤掉 open 为 null 的 K 线（只有链上 tick，没有价格数据的 K 线）
+ * RSI 计算前调用
+ */
+function filterValidCandles(candles) {
+  return candles.filter(c => c.open !== null && c.close !== null);
+}
+
 module.exports = {
   evaluateSignal,
   buildCandles,
+  filterValidCandles,
   calcRSIWithState,
   stepRSI,
   checkBuyVolume,
   checkVolumeDecay,
-  // 导出配置供回测使用
+  checkStopLoss,
   CONFIG: {
     RSI_PERIOD, RSI_BUY, RSI_SELL, RSI_PANIC,
     VOL_ENABLED, VOL_WINDOW_SEC,

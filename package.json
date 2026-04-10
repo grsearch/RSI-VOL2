@@ -1,7 +1,7 @@
 {
-  "name": "sol-rsi-monitor-v2",
-  "version": "2.0.0",
-  "description": "Solana RSI(7)+量能 策略监控 — 15秒K线 · 空跑/回测/实盘",
+  "name": "sol-rsi-monitor-v3",
+  "version": "3.0.0",
+  "description": "Solana RSI(7)+量能 策略监控 — BirdeyeWS实时价格 · HeliusWS/LaserStream链上数据 · 快速止损<500ms",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
