@@ -1,47 +1,47 @@
 'use strict';
-// src/heliusWs.js — Helius Enhanced WebSocket / LaserStream 链上交易监听
+// src/heliusWs.js — Helius Enhanced WebSocket 链上交易监听
 //
-// V3 改进：
-//   1. 支持 LaserStream（法兰克福节点，shred 级延迟）
-//   2. 支持 Enhanced WebSocket URL
-//   3. 支持 Gatekeeper RPC（beta）— 用于发送交易
-//   4. 同时订阅 Pump AMM + Raydium V4 程序
-//   5. 更精确的 buy/sell 方向解析
-//
-// 连接优先级：
-//   HELIUS_LASERSTREAM_URL > HELIUS_WSS_URL > 自动拼接
+// V3.1 修复：
+//   1. 修复 LaserStream URL 处理 — LaserStream 是 gRPC 服务，不能用 ws 库直接连
+//      LaserStream URL 仅用于 trader.js 的 RPC 发单，不用于 WebSocket 订阅
+//   2. WebSocket 连接优先级：
+//      Gatekeeper WSS (beta, 最快) > HELIUS_WSS_URL > 统一端点
+//   3. 同时订阅 Pump AMM + Raydium V4 + Raydium CPMM
+//   4. 10分钟 inactivity 保活（Helius Enhanced WS 的断线阈值）
+//   5. 支持 accountInclude 最多 50,000 地址
 
 const WebSocket = require('ws');
 const logger    = require('./logger');
 
 // ── 配置 ────────────────────────────────────────────────────────
 
-const HELIUS_LASERSTREAM_URL = process.env.HELIUS_LASERSTREAM_URL || '';
 const HELIUS_WSS_URL         = process.env.HELIUS_WSS_URL || '';
+const HELIUS_GATEKEEPER_URL  = process.env.HELIUS_GATEKEEPER_URL || '';
 const HELIUS_API_KEY         = process.env.HELIUS_API_KEY || '';
 const HELIUS_RPC_URL         = process.env.HELIUS_RPC_URL || '';
 
 function getWsUrl() {
-  // 1. LaserStream（最低延迟）
-  if (HELIUS_LASERSTREAM_URL) {
-    // LaserStream URL 是 HTTPS，转为 WSS
-    let url = HELIUS_LASERSTREAM_URL;
+  // 注意：LaserStream (HELIUS_LASERSTREAM_URL) 是 gRPC 协议，
+  // 不能用 ws 库连接，仅用于 trader.js 的 sendTransaction。
+  // WebSocket 订阅必须用 Enhanced WSS 端点。
+
+  // 1. Gatekeeper WSS (beta) — 最低延迟 WebSocket
+  //    文档: wss://beta.helius-rpc.com/?api-key=YOUR_KEY
+  if (HELIUS_GATEKEEPER_URL) {
+    let url = HELIUS_GATEKEEPER_URL;
+    // 将 https:// 转为 wss://（Gatekeeper 支持 WebSocket 协议）
     if (url.startsWith('https://')) url = url.replace('https://', 'wss://');
     if (!url.startsWith('wss://')) url = `wss://${url}`;
-    // 添加 api-key
-    const apiKey = HELIUS_API_KEY || extractApiKey(HELIUS_RPC_URL);
-    if (apiKey && !url.includes('api-key=')) {
-      url += (url.includes('?') ? '&' : '?') + `api-key=${apiKey}`;
-    }
-    return { url, type: 'laserstream' };
+    return { url, type: 'gatekeeper' };
   }
 
-  // 2. Enhanced WebSocket URL
+  // 2. 直接配置的 Enhanced WebSocket URL
   if (HELIUS_WSS_URL) {
     return { url: HELIUS_WSS_URL, type: 'enhanced' };
   }
 
-  // 3. 从 RPC URL / API Key 拼接
+  // 3. 从 API Key / RPC URL 拼接统一端点
+  //    统一端点 = Standard + Enhanced WSS 合一
   const apiKey = HELIUS_API_KEY || extractApiKey(HELIUS_RPC_URL);
   if (!apiKey) return { url: '', type: 'none' };
 
@@ -90,7 +90,7 @@ class HeliusTradeStream {
     const { url, type } = getWsUrl();
     if (!url) {
       logger.warn('[HeliusWS] ⚠️ 未配置 Helius WebSocket URL，链上量能数据不可用');
-      logger.warn('[HeliusWS]    设置 HELIUS_LASERSTREAM_URL 或 HELIUS_WSS_URL 或 HELIUS_API_KEY');
+      logger.warn('[HeliusWS]    设置 HELIUS_WSS_URL 或 HELIUS_GATEKEEPER_URL 或 HELIUS_API_KEY');
       return;
     }
 

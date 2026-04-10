@@ -85,16 +85,19 @@ server.listen(PORT, () => {
   const heliusKey   = process.env.HELIUS_API_KEY || '';
   const heliusRpc   = process.env.HELIUS_RPC_URL || '';
 
-  if (heliusLaser) {
-    logger.info('   Helius: ✅ LaserStream（shred 级延迟）');
+  if (heliusGK) {
+    logger.info('   Helius WS: ✅ Gatekeeper Beta WSS（最低延迟 WebSocket）');
   } else if (heliusWss) {
-    logger.info('   Helius: ✅ Enhanced WebSocket');
+    logger.info('   Helius WS: ✅ Enhanced WebSocket');
   } else if (heliusKey || heliusRpc.includes('api-key=')) {
-    logger.info('   Helius: ✅ 标准 WebSocket');
+    logger.info('   Helius WS: ✅ 统一端点 WebSocket');
   } else {
-    logger.info('   Helius: ⚠️ 未配置，量能退化为 tick count');
+    logger.info('   Helius WS: ⚠️ 未配置，量能退化为 tick count');
   }
 
+  if (heliusLaser) {
+    logger.info('   Helius RPC: ✅ LaserStream gRPC（仅用于 sendTransaction 加速）');
+  }
   if (heliusGK) {
     logger.info('   Helius RPC: ✅ Gatekeeper Beta（最低延迟发单）');
   } else if (heliusRpc) {
