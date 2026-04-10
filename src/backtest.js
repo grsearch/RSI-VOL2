@@ -45,6 +45,7 @@ function runBacktest(ticks, params) {
     takeProfitPct  = 50,
     stopLossPct    = -10,
     tradeSizeSol   = 0.2,
+    maxTrades      = 5,            // ★ 每个 token 最大交易次数
   } = params;
 
   if (!ticks || ticks.length === 0) return null;
@@ -145,6 +146,7 @@ function runBacktest(ticks, params) {
   let entryIdx    = 0;
   let prevRsi     = NaN;
   let volDecayCount = 0;
+  let cooldownUntil = 0;   // ★ 冷却到期K线索引
 
   for (let i = 1; i < candles.length; i++) {
     const rsi = rsiArray[i];
@@ -208,15 +210,18 @@ function runBacktest(ticks, params) {
           pnlSol: solOut - tradeSizeSol,
           pnlPct: (price - entryPrice) / entryPrice * 100,
           exitReason,
+          tradeNum: trades.length + 1,
         });
         inPosition = false;
         volDecayCount = 0;
-        // 只做一笔，跳出当前 token
-        break;
+        // ★ 多次交易：卖出后冷却 2 根K线，不再 break
+        cooldownUntil = i + Math.max(1, Math.ceil(30 / klineSec));  // 冷却 30 秒 ≈ 2 根K线
+        if (trades.length >= maxTrades) break;  // 达到最大交易次数才退出
       }
     } else {
       // BUY 条件（方案B）：RSI 处于超卖区（≤ rsiBuy）+ 窗口内 buy > sell
-      if (rsi <= rsiBuy) {
+      // ★ 冷却期检查
+      if (rsi <= rsiBuy && i >= cooldownUntil) {
         let volPass = true;
 
         if (volEnabled) {
@@ -378,7 +383,7 @@ function gridSearch(tickFiles) {
       rsiPeriod: 7, rsiSell: 70, rsiPanic: 80,
       klineSec: 15, volEnabled: true, volLookback: 4,
       volExitConsecutive: 2, volExitRatio: 1.0,
-      tradeSizeSol: 0.2,
+      tradeSizeSol: 0.2, maxTrades: 5,
       ...combo,
     };
 
@@ -475,6 +480,7 @@ function main() {
     takeProfitPct:      parseFloat(args['take-profit']    || process.env.TAKE_PROFIT_PCT || '50'),
     stopLossPct:        parseFloat(args['stop-loss']      || process.env.STOP_LOSS_PCT || '-10'),
     tradeSizeSol:       parseFloat(args['trade-size']     || process.env.TRADE_SIZE_SOL || '0.2'),
+    maxTrades:          parseInt(args['max-trades']       || process.env.MAX_TRADES_PER_TOKEN || '5', 10),
   };
 
   console.log('📋 回测参数：');
@@ -484,7 +490,7 @@ function main() {
     params.volEnabled, params.volMult, params.volLookback, (params.volBuyRatio * 100).toFixed(0));
   console.log('   出场: volDecay=%d根连续 ratio<%sx  TP=%+d%% SL=%d%%',
     params.volExitConsecutive, params.volExitRatio, params.takeProfitPct, params.stopLossPct);
-  console.log('   跳过前 %d 根K线\n', params.skipFirstCandles);
+  console.log('   跳过前 %d 根K线  最大交易 %d 次/token\n', params.skipFirstCandles, params.maxTrades);
 
   // 筛选 token
   let filesToTest = tickFiles;

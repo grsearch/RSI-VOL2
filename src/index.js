@@ -60,7 +60,7 @@ server.listen(PORT, () => {
   logger.info('🚀 SOL RSI+量能 Monitor V3 启动，端口 %d', PORT);
   logger.info('   模式: %s', DRY_RUN ? '🔵 空跑(DRY_RUN)' : '🔴 实盘(LIVE)');
   logger.info('   K线=%ds  轮询=%ds  RSI周期=%s  买≤%s  卖≥%s  恐慌>%s',
-    process.env.KLINE_INTERVAL_SEC || 15,
+    process.env.KLINE_INTERVAL_SEC || 5,
     process.env.PRICE_POLL_SEC     || 1,
     process.env.RSI_PERIOD         || 7,
     process.env.RSI_BUY_LEVEL      || 30,
@@ -73,6 +73,10 @@ server.listen(PORT, () => {
     process.env.TAKE_PROFIT_PCT    || '50',
     process.env.STOP_LOSS_PCT      || '-10',
     process.env.SKIP_FIRST_CANDLES || '8');
+  logger.info('   监控=%s分钟  最大交易=%s次/token  卖出冷却=%ss',
+    process.env.TOKEN_MAX_AGE_MINUTES || '30',
+    process.env.MAX_TRADES_PER_TOKEN  || '5',
+    process.env.SELL_COOLDOWN_SEC     || '30');
 
   // 连接信息
   const birdeyeKey = process.env.BIRDEYE_API_KEY || '';

@@ -1,13 +1,15 @@
 'use strict';
-// src/monitor.js — 核心监控引擎 V3
+// src/monitor.js — 核心监控引擎 V3.2
 //
-// V3 修复与改进：
-//   1. 修复致命 BUG：链上交易 tick（SOL 计价）不再混入价格 tick（USD 计价）
-//      - 价格 tick: { price, ts, source: 'price' }
-//      - 链上 tick: { price: priceSol, ts, solAmount, isBuy, source: 'chain' }
-//   2. Birdeye WS 实时价格推送驱动止损（延迟 <150ms）
-//   3. 止损快速路径：价格回调 → checkStopLoss → 立即 sell（不等轮询）
-//   4. 轮询周期可以放宽到 5s（只做 FDV 检查 + RSI 信号），实际止损由 WS 驱动
+// V3.2 改进：
+//   1. 监控期 30 分钟（可配置），监控期内允许多次买卖
+//   2. 卖出后不再退出监控，重置状态等待下一个买入信号
+//   3. 卖出后有冷却期（SELL_COOLDOWN_SEC），防止同一信号反复触发
+//   4. MAX_TRADES_PER_TOKEN 限制单个 token 最大交易次数
+//   5. 到期时如仍持仓，强制卖出后移除
+//
+// 交易生命周期：
+//   addToken → [BUY → SELL → 冷却 → BUY → SELL → ...] → EXPIRED/MAX_TRADES → removeToken
 
 const EventEmitter = require('events');
 const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss } = require('./rsi');
@@ -18,12 +20,14 @@ const wsHub     = require('./wsHub');
 const dataStore = require('./dataStore');
 const heliusWs  = require('./heliusWs');
 
-const MONITOR_MINUTES = parseInt(process.env.TOKEN_MAX_AGE_MINUTES || '15', 10);
-const FDV_EXIT        = parseFloat(process.env.FDV_EXIT_USD        || '10000');
-const POLL_SEC        = parseInt(process.env.PRICE_POLL_SEC        || '1',  10);
-const KLINE_SEC       = parseInt(process.env.KLINE_INTERVAL_SEC    || '15', 10);
-const DRY_RUN         = (process.env.DRY_RUN || 'false') === 'true';
-const TRADE_SOL       = parseFloat(process.env.TRADE_SIZE_SOL      || '0.2');
+const MONITOR_MINUTES   = parseInt(process.env.TOKEN_MAX_AGE_MINUTES || '30', 10);
+const FDV_EXIT          = parseFloat(process.env.FDV_EXIT_USD        || '10000');
+const POLL_SEC          = parseInt(process.env.PRICE_POLL_SEC        || '1',  10);
+const KLINE_SEC         = parseInt(process.env.KLINE_INTERVAL_SEC    || '15', 10);
+const DRY_RUN           = (process.env.DRY_RUN || 'false') === 'true';
+const TRADE_SOL         = parseFloat(process.env.TRADE_SIZE_SOL      || '0.2');
+const MAX_TRADES        = parseInt(process.env.MAX_TRADES_PER_TOKEN  || '5',  10);
+const SELL_COOLDOWN_SEC = parseInt(process.env.SELL_COOLDOWN_SEC     || '30', 10);
 
 // 全局交易记录
 const _allTradeRecords = [];
@@ -57,15 +61,12 @@ class TokenMonitor extends EventEmitter {
     _loadPersistedTrades();
     dataStore.startFlush();
 
-    // 启动 Birdeye WebSocket 价格流
     birdeye.priceStream.start();
-
-    // 启动 Helius WebSocket（链上交易数据）
     heliusWs.start();
 
     this._scheduleNextPoll();
-    logger.info('[Monitor] 启动 | 轮询=%ds K线=%ds DRY_RUN=%s',
-      POLL_SEC, KLINE_SEC, DRY_RUN);
+    logger.info('[Monitor] 启动 | 轮询=%ds K线=%ds 监控=%d分钟 最大交易=%d次 冷却=%ds DRY_RUN=%s',
+      POLL_SEC, KLINE_SEC, MONITOR_MINUTES, MAX_TRADES, SELL_COOLDOWN_SEC, DRY_RUN);
     logger.info('[Monitor]   BirdeyeWS=%s  HeliusWS=%s',
       birdeye.priceStream.isConnected() ? '已连接' : '连接中',
       heliusWs.isConnected() ? '已连接' : '连接中');
@@ -90,42 +91,41 @@ class TokenMonitor extends EventEmitter {
       address,
       symbol,
       meta,
-      fdv            : meta.fdv ?? null,
-      lp             : meta.lp  ?? null,
-      addedAt        : now,
-      expiresAt      : now + MONITOR_MINUTES * 60 * 1000,
-      ticks          : [],     // 混合 tick 数组（带 source 标记）
-      inPosition     : false,
-      position       : null,
-      tradeCount     : 0,
-      shouldExit     : false,
-      exitSent       : false,
-      tradeLogs      : [],
-      tradeRecords   : [],
-      _prevRsiRealtime: NaN,
-      _prevRsiTs      : 0,
-      _lastBuyCandle  : -1,
-      _lastSellCandle : -1,
-      _lastPriceUsd   : null,  // 最新 USD 价格（Birdeye WS 推送）
-      _lastPriceTs    : 0,
+      fdv               : meta.fdv ?? null,
+      lp                : meta.lp  ?? null,
+      addedAt           : now,
+      expiresAt         : now + MONITOR_MINUTES * 60 * 1000,
+      ticks             : [],
+      inPosition        : false,
+      position          : null,
+      tradeCount        : 0,       // 完成的买卖轮次数
+      tradeLogs         : [],
+      tradeRecords      : [],
+      _prevRsiRealtime  : NaN,
+      _prevRsiTs        : 0,
+      _lastBuyCandle    : -1,
+      _lastSellCandle   : -1,
+      _lastPriceUsd     : null,
+      _lastPriceTs      : 0,
+      // ★ 多次买卖相关
+      _sellCooldownUntil: 0,       // 卖出后冷却到期时间戳
+      _selling          : false,   // 正在执行卖出中（防并发）
     };
 
     this._tokens.set(address, state);
 
-    // 订阅 Birdeye WS 实时价格（USD，用于 RSI + 止损）
     birdeye.priceStream.subscribe(address, (price, ts, ohlcv) => {
       this._onBirdeyePrice(address, price, ts);
     });
 
-    // 订阅 Helius WS 链上交易数据（SOL，用于量能分析）
     heliusWs.subscribe(address, symbol, (trade) => {
       this._onChainTrade(address, trade);
     });
 
-    logger.info('[Monitor] ➕ 开始监控 %s (%s)，到期 %s | DRY_RUN=%s',
+    logger.info('[Monitor] ➕ 开始监控 %s (%s)，到期 %s | 最多%d笔 | DRY_RUN=%s',
       symbol, address,
       new Date(state.expiresAt).toLocaleTimeString(),
-      DRY_RUN);
+      MAX_TRADES, DRY_RUN);
     this._broadcastTokenList();
     return true;
   }
@@ -134,16 +134,16 @@ class TokenMonitor extends EventEmitter {
     const state = this._tokens.get(address);
     if (!state) return;
 
-    logger.info('[Monitor] ➖ 移除 %s，原因: %s', state.symbol, reason);
+    logger.info('[Monitor] ➖ 移除 %s，原因: %s (共完成%d笔交易)', state.symbol, reason, state.tradeCount);
 
-    if (state.inPosition && !state.exitSent) {
+    // 到期/手动移除时如仍持仓，强制卖出
+    if (state.inPosition && !state._selling) {
       logger.info('[Monitor] 📤 持仓中，先执行卖出...');
-      await this._doSellExit(state, `FORCED_EXIT(${reason})`);
+      await this._doSell(state, `FORCED_EXIT(${reason})`);
     }
 
     dataStore.flushTicks();
 
-    // 取消订阅
     birdeye.priceStream.unsubscribe(address);
     heliusWs.unsubscribe(address);
 
@@ -166,30 +166,28 @@ class TokenMonitor extends EventEmitter {
 
   _onBirdeyePrice(address, price, ts) {
     const state = this._tokens.get(address);
-    if (!state || state.exitSent) return;
+    if (!state) return;
 
-    // 更新最新价格
     state._lastPriceUsd = price;
     state._lastPriceTs  = ts;
 
-    // 记录价格 tick（source: 'price'，USD 计价）
     const tick = { price, ts, source: 'price' };
     state.ticks.push(tick);
 
-    // 持久化
     dataStore.appendTick(address, {
       price, ts, source: 'price', symbol: state.symbol,
     });
 
-    // ★ 快速止损检查（每个价格 tick 都检查，不等轮询）
-    if (state.inPosition && !this._stopLossLocks.has(address)) {
+    // ★ 快速止损检查（持仓中 + 非冷却期 + 未在卖出中）
+    if (state.inPosition && !state._selling && !this._stopLossLocks.has(address)) {
       const sl = checkStopLoss(price, state);
       if (sl.shouldExit) {
-        logger.info('[Monitor] ⚡ 快速止损触发 %s @ %.8f | %s', state.symbol, price, sl.reason);
+        logger.info('[Monitor] ⚡ 快速止损触发 %s @ %.8f | %s | 第%d笔',
+          state.symbol, price, sl.reason, state.tradeCount + 1);
         this._stopLossLocks.add(address);
-        // 异步执行止损，不阻塞 WS 回调
-        this._doSellExit(state, sl.reason).catch(err => {
+        this._doSell(state, sl.reason).catch(err => {
           logger.error('[Monitor] 快速止损执行失败 %s: %s', state.symbol, err.message);
+        }).finally(() => {
           this._stopLossLocks.delete(address);
         });
       }
@@ -200,23 +198,19 @@ class TokenMonitor extends EventEmitter {
 
   _onChainTrade(address, trade) {
     const state = this._tokens.get(address);
-    if (!state || state.exitSent) return;
+    if (!state) return;
 
     const now = Date.now();
-
-    // 记录链上交易 tick（source: 'chain'，SOL 计价）
-    // ★ 关键修复：标记 source='chain'，buildCandles 中只用于 volume，不用于 OHLC
     const tick = {
-      price:     trade.priceSol,   // SOL 计价（不会混入 RSI 的 OHLC）
+      price:     trade.priceSol,
       ts:        trade.ts || now,
       solAmount: trade.solAmount,
       isBuy:     trade.isBuy,
-      source:    'chain',          // ★ 关键标记
+      source:    'chain',
     };
 
     state.ticks.push(tick);
 
-    // 持久化
     dataStore.appendTick(address, {
       ...tick,
       symbol:    state.symbol,
@@ -232,7 +226,7 @@ class TokenMonitor extends EventEmitter {
       trade.signature?.slice(0, 12) || '?');
   }
 
-  // ── 主轮询（RSI 信号 + FDV 检查 + 过期检查） ────────────────────
+  // ── 主轮询 ────────────────────────────────────────────────────
 
   _scheduleNextPoll() {
     if (!this._started) return;
@@ -248,7 +242,10 @@ class TokenMonitor extends EventEmitter {
 
   async _pollOne(address, now) {
     const state = this._tokens.get(address);
-    if (!state || state.exitSent) return;
+    if (!state) return;
+
+    // 正在卖出中，跳过此轮
+    if (state._selling) return;
 
     // 1. 到期检查
     if (now >= state.expiresAt) {
@@ -256,7 +253,15 @@ class TokenMonitor extends EventEmitter {
       return;
     }
 
-    // 2. 获取价格（优先 WS 缓存，降级 HTTP）
+    // 2. 最大交易次数检查（非持仓时检查，持仓中让它继续完成当前交易）
+    if (state.tradeCount >= MAX_TRADES && !state.inPosition) {
+      logger.info('[Monitor] %s 已达到最大交易次数 %d/%d，移除',
+        state.symbol, state.tradeCount, MAX_TRADES);
+      await this.removeToken(address, `MAX_TRADES(${state.tradeCount}/${MAX_TRADES})`);
+      return;
+    }
+
+    // 3. 获取价格
     let price;
     try {
       price = await birdeye.getPrice(address);
@@ -265,17 +270,16 @@ class TokenMonitor extends EventEmitter {
       return;
     }
 
-    // 如果 WS 价格不可用，用 HTTP 价格补一个 tick
+    // WS 不可用时补 tick
     if (!state._lastPriceUsd || now - state._lastPriceTs > 5000) {
       const tick = { price, ts: now, source: 'price' };
       state.ticks.push(tick);
       state._lastPriceUsd = price;
       state._lastPriceTs  = now;
-
       dataStore.appendTick(address, { price, ts: now, source: 'price', symbol: state.symbol });
     }
 
-    // 3. FDV 检查
+    // 4. FDV 检查
     const fdv = await birdeye.getFdv(address);
     if (fdv !== null && fdv !== undefined && Number.isFinite(fdv) && fdv < FDV_EXIT) {
       logger.warn('[Monitor] %s FDV=$%s < $%s，退出', state.symbol, fdv, FDV_EXIT);
@@ -283,37 +287,37 @@ class TokenMonitor extends EventEmitter {
       return;
     }
 
-    // 4. 裁剪 ticks（保留最近 30 分钟）
-    const cutoff = now - 30 * 60 * 1000;
+    // 5. 裁剪 ticks（保留 45 分钟，大于监控期以留余量）
+    const cutoff = now - 45 * 60 * 1000;
     while (state.ticks.length > 0 && state.ticks[0].ts < cutoff) state.ticks.shift();
 
-    // 5. 聚合 K 线
+    // 6. 聚合 K 线
     const { closed: rawClosedCandles, current: currentCandle } = buildCandles(state.ticks, KLINE_SEC);
-
-    // ★ 过滤掉没有价格数据的 K 线（只有链上 tick 的 K 线 open 为 null）
     const closedCandles = filterValidCandles(rawClosedCandles);
 
-    // 6. RSI + 量能信号评估
+    // 7. RSI + 量能信号评估
     const realtimePrice = currentCandle?.close ?? price;
     const { rsi, prevRsi, signal, reason, volume } = evaluateSignal(closedCandles, realtimePrice, state);
 
-    // 7. 记录信号
+    // 8. 记录信号
     if (reason && reason !== '' && reason !== 'rsi_rebase') {
       dataStore.appendSignal({
         ts: now, address, symbol: state.symbol,
         price, rsi: Number.isFinite(rsi) ? parseFloat(rsi.toFixed(2)) : null,
         prevRsi: Number.isFinite(prevRsi) ? parseFloat(prevRsi.toFixed(2)) : null,
         signal, reason, volume, inPosition: state.inPosition,
+        tradeCount: state.tradeCount,
       });
     }
 
-    // 8. 广播实时数据
+    // 9. 广播实时数据
     wsHub.broadcast({
       type:        'tick',
       address,
       symbol:      state.symbol,
       price,
       fdv,
+      lp:          state.lp,
       rsi:         Number.isFinite(rsi) ? parseFloat(rsi.toFixed(2)) : null,
       prevRsi:     Number.isFinite(prevRsi) ? parseFloat(prevRsi.toFixed(2)) : null,
       signal,
@@ -321,6 +325,9 @@ class TokenMonitor extends EventEmitter {
       closedCount: closedCandles.length,
       inPosition:  state.inPosition,
       volume,
+      tradeCount:  state.tradeCount,
+      maxTrades:   MAX_TRADES,
+      cooldown:    state._sellCooldownUntil > now ? Math.ceil((state._sellCooldownUntil - now) / 1000) : 0,
       dryRun:      DRY_RUN,
       ts:          now,
       birdeyeWs:   birdeye.priceStream.isConnected(),
@@ -328,22 +335,43 @@ class TokenMonitor extends EventEmitter {
       heliusStats: heliusWs.getStats(),
     });
 
-    logger.debug('[RSI] %s price=%.6f rsi=%.2f prev=%.2f signal=%s reason=%s vol=%s',
+    logger.debug('[RSI] %s price=%.6f rsi=%.2f prev=%.2f signal=%s reason=%s trades=%d/%d inPos=%s cool=%ds',
       state.symbol, price, rsi, prevRsi, signal || 'none', reason,
-      volume ? `buy=${(volume.buyVol||0).toFixed(2)}/sell=${(volume.sellVol||0).toFixed(2)}` : '-');
+      state.tradeCount, MAX_TRADES, state.inPosition,
+      state._sellCooldownUntil > now ? Math.ceil((state._sellCooldownUntil - now) / 1000) : 0);
 
-    // 9. 执行信号
-    if (signal === 'BUY' && !state.inPosition && !state.shouldExit) {
+    // 10. 执行信号
+    if (signal === 'BUY' && !state.inPosition && this._canBuy(state, now)) {
       await this._doBuy(state, price, reason);
-    } else if (signal === 'SELL' && state.inPosition) {
-      await this._doSellExit(state, reason);
+    } else if (signal === 'SELL' && state.inPosition && !state._selling) {
+      await this._doSell(state, reason);
     }
   }
 
-  // ── 交易执行 ────────────────────────────────────────────────────
+  // ── 是否可以买入 ────────────────────────────────────────────────
+
+  _canBuy(state, now) {
+    // 已在持仓中
+    if (state.inPosition) return false;
+    // 正在卖出中
+    if (state._selling) return false;
+    // 已达最大交易次数
+    if (state.tradeCount >= MAX_TRADES) return false;
+    // 冷却期中
+    if (now < state._sellCooldownUntil) {
+      logger.debug('[Monitor] %s 冷却中，还剩 %ds',
+        state.symbol, Math.ceil((state._sellCooldownUntil - now) / 1000));
+      return false;
+    }
+    return true;
+  }
+
+  // ── 买入 ────────────────────────────────────────────────────────
 
   async _doBuy(state, price, reason) {
-    logger.info('[Monitor] 🟢 BUY %s @ %.8f | %s | DRY_RUN=%s', state.symbol, price, reason, DRY_RUN);
+    const tradeNum = state.tradeCount + 1;
+    logger.info('[Monitor] 🟢 BUY #%d %s @ %.8f | %s | DRY_RUN=%s',
+      tradeNum, state.symbol, price, reason, DRY_RUN);
     state.inPosition = true;
 
     if (DRY_RUN) {
@@ -354,11 +382,14 @@ class TokenMonitor extends EventEmitter {
         solIn         : TRADE_SOL,
         buyTxid       : `DRY_${Date.now()}`,
         buyTime       : Date.now(),
+        buyReason     : reason,
       };
       state.tradeCount++;
-      this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason, txid: state.position.buyTxid, solIn: TRADE_SOL, dryRun: true });
+      this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason,
+        txid: state.position.buyTxid, solIn: TRADE_SOL, dryRun: true, tradeNum });
       this._createTradeRecord(state);
-      logger.info('[Monitor] ✅ DRY_RUN BUY 模拟成功 %s @ %.8f  solIn=%.4f', state.symbol, price, TRADE_SOL);
+      logger.info('[Monitor] ✅ DRY_RUN BUY #%d %s @ %.8f  solIn=%.4f',
+        tradeNum, state.symbol, price, TRADE_SOL);
     } else {
       try {
         const result = await trader.buy(state.address, state.symbol);
@@ -368,32 +399,40 @@ class TokenMonitor extends EventEmitter {
           solIn         : result.solIn,
           buyTxid       : result.txid,
           buyTime       : Date.now(),
+          buyReason     : reason,
         };
         state.tradeCount++;
-        this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason, txid: result.txid, solIn: result.solIn });
+        this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason,
+          txid: result.txid, solIn: result.solIn, tradeNum });
         this._createTradeRecord(state);
-        logger.info('[Monitor] ✅ BUY 成功 %s  solIn=%.4f SOL  txid=%s', state.symbol, result.solIn, result.txid);
+        logger.info('[Monitor] ✅ BUY #%d %s  solIn=%.4f SOL  txid=%s',
+          tradeNum, state.symbol, result.solIn, result.txid);
       } catch (err) {
-        logger.error('[Monitor] ❌ BUY 失败 %s: %s', state.symbol, err.message);
+        logger.error('[Monitor] ❌ BUY #%d %s 失败: %s', tradeNum, state.symbol, err.message);
         state.inPosition = false;
       }
     }
   }
 
-  async _doSellExit(state, reason) {
-    if (state.exitSent) return;
-    state.exitSent = true;
+  // ── 卖出（不再退出监控，重置状态等待下一轮） ────────────────────
+
+  async _doSell(state, reason) {
+    if (state._selling) return;  // 防并发
+    state._selling = true;
 
     const isStopLoss = reason.includes('STOP_LOSS') || reason.includes('TAKE_PROFIT');
-    logger.info('[Monitor] 🔴 SELL %s | %s | isStopLoss=%s | DRY_RUN=%s',
-      state.symbol, reason, isStopLoss, DRY_RUN);
+    const tradeNum = state.tradeCount;
+    logger.info('[Monitor] 🔴 SELL #%d %s | %s | isStopLoss=%s | DRY_RUN=%s',
+      tradeNum, state.symbol, reason, isStopLoss, DRY_RUN);
 
     if (DRY_RUN) {
       let currentPrice;
       try {
         currentPrice = await birdeye.getPrice(state.address);
       } catch (_) {
-        currentPrice = state._lastPriceUsd || (state.ticks.length > 0 ? state.ticks[state.ticks.length - 1].price : state.position?.entryPriceUsd || 0);
+        currentPrice = state._lastPriceUsd
+          || (state.ticks.length > 0 ? state.ticks[state.ticks.length - 1].price : 0)
+          || state.position?.entryPriceUsd || 0;
       }
 
       const solIn  = state.position?.solIn ?? TRADE_SOL;
@@ -403,11 +442,12 @@ class TokenMonitor extends EventEmitter {
       const pnlSol = solOut - solIn;
 
       state.inPosition = false;
-      this._addTradeLog(state, { type: 'SELL', symbol: state.symbol, reason, txid: `DRY_${Date.now()}`, solOut, pnlSol, dryRun: true });
+      this._addTradeLog(state, { type: 'SELL', symbol: state.symbol, reason,
+        txid: `DRY_${Date.now()}`, solOut, pnlSol, dryRun: true, tradeNum });
       this._finalizeTradeRecord(state, reason, solOut, pnlPct);
 
-      logger.info('[Monitor] ✅ DRY_RUN SELL %s  solIn=%.4f  solOut=%.4f  pnl=%+.4f SOL (%+.1f%%)',
-        state.symbol, solIn, solOut, pnlSol, pnlPct);
+      logger.info('[Monitor] ✅ DRY_RUN SELL #%d %s  solIn=%.4f  solOut=%.4f  pnl=%+.4f SOL (%+.1f%%)',
+        tradeNum, state.symbol, solIn, solOut, pnlSol, pnlPct);
     } else {
       try {
         const result = await trader.sell(state.address, state.symbol, state.position, isStopLoss);
@@ -417,27 +457,47 @@ class TokenMonitor extends EventEmitter {
         const pnlSol  = solOut - solIn;
 
         state.inPosition = false;
-        this._addTradeLog(state, { type: 'SELL', symbol: state.symbol, reason, txid: result.txid, solOut, pnlSol, elapsedMs: result.elapsedMs });
+        this._addTradeLog(state, { type: 'SELL', symbol: state.symbol, reason,
+          txid: result.txid, solOut, pnlSol, elapsedMs: result.elapsedMs, tradeNum });
         this._finalizeTradeRecord(state, reason, solOut, pnlPct);
 
-        logger.info('[Monitor] ✅ SELL 成功 %s  solIn=%.4f  solOut=%.4f  pnl=%+.4f SOL (%+.1f%%)  耗时=%dms  txid=%s',
-          state.symbol, solIn, solOut, pnlSol, pnlPct, result.elapsedMs || 0, result.txid);
+        logger.info('[Monitor] ✅ SELL #%d %s  solIn=%.4f  solOut=%.4f  pnl=%+.4f SOL (%+.1f%%)  耗时=%dms  txid=%s',
+          tradeNum, state.symbol, solIn, solOut, pnlSol, pnlPct, result.elapsedMs || 0, result.txid);
       } catch (err) {
-        logger.error('[Monitor] ❌ SELL 失败 %s: %s', state.symbol, err.message);
+        logger.error('[Monitor] ❌ SELL #%d %s 失败: %s', tradeNum, state.symbol, err.message);
+        state.inPosition = false;
         this._finalizeTradeRecord(state, `SELL_FAILED(${reason})`, 0, -100);
       }
     }
 
-    logger.info('[Monitor] 🏁 %s 第%d笔完成，5s后退出监控', state.symbol, state.tradeCount);
-    state.shouldExit = true;
-    setTimeout(() => this.removeToken(state.address, 'TRADE_DONE'), 5000);
+    // ★ 重置状态，准备下一轮交易
+    state._selling = false;
+    state.position = null;
+
+    // ★ 设置冷却期
+    state._sellCooldownUntil = Date.now() + SELL_COOLDOWN_SEC * 1000;
+    // 重置 RSI 穿越防抖（允许新的穿越信号）
+    state._lastBuyCandle  = -1;
+    state._lastSellCandle = -1;
+
+    const remaining = Math.max(0, MAX_TRADES - state.tradeCount);
+    const timeLeft  = Math.max(0, Math.ceil((state.expiresAt - Date.now()) / 60000));
+    logger.info('[Monitor] 🔄 %s 第%d笔完成 | 剩余额度=%d笔 | 剩余时间=%d分钟 | 冷却=%ds',
+      state.symbol, tradeNum, remaining, timeLeft, SELL_COOLDOWN_SEC);
+
+    // 如果已达最大交易次数，立即移除
+    if (state.tradeCount >= MAX_TRADES) {
+      logger.info('[Monitor] 🏁 %s 已达最大交易次数 %d，移除监控', state.symbol, MAX_TRADES);
+      // 延迟一点移除，让广播先发出
+      setTimeout(() => this.removeToken(state.address, `MAX_TRADES(${state.tradeCount})`), 2000);
+    }
   }
 
   // ── 辅助工具 ────────────────────────────────────────────────────
 
   _addTradeLog(state, log) {
     state.tradeLogs.push({ ...log, ts: Date.now() });
-    if (state.tradeLogs.length > 200) state.tradeLogs.shift();
+    if (state.tradeLogs.length > 500) state.tradeLogs.shift();
     wsHub.broadcast({ type: 'trade_log', ...log, ts: Date.now() });
     this.emit('trade', log);
   }
@@ -448,12 +508,14 @@ class TokenMonitor extends EventEmitter {
       id:         `${state.address}_${state.tradeCount}_${Date.now()}`,
       address:    state.address,
       symbol:     state.symbol,
+      tradeNum:   state.tradeCount,
       buyAt:      state.position.buyTime,
       buyTxid:    state.position.buyTxid,
       entryPrice: state.position.entryPriceUsd,
       entryFdv:   state.fdv,
       entryLp:    state.lp,
       solIn:      state.position.solIn,
+      buyReason:  state.position.buyReason || '',
       dryRun:     DRY_RUN,
       exitAt:     null,
       exitReason: null,
@@ -493,14 +555,17 @@ class TokenMonitor extends EventEmitter {
   }
 
   _stateSnapshot(state) {
+    const now = Date.now();
     return {
       address:      state.address,
       symbol:       state.symbol,
       addedAt:      state.addedAt,
       expiresAt:    state.expiresAt,
+      timeLeftMin:  Math.max(0, Math.ceil((state.expiresAt - now) / 60000)),
       inPosition:   state.inPosition,
       tradeCount:   state.tradeCount,
-      shouldExit:   state.shouldExit,
+      maxTrades:    MAX_TRADES,
+      cooldown:     state._sellCooldownUntil > now ? Math.ceil((state._sellCooldownUntil - now) / 1000) : 0,
       tradeLogs:    state.tradeLogs,
       tradeRecords: state.tradeRecords,
       dryRun:       DRY_RUN,

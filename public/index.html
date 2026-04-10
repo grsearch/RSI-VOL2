@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SOL RSI+量能 Monitor V2</title>
+<title>SOL RSI+量能 Monitor V3</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#0d1117;color:#e6edf3;font-family:'Consolas',monospace;font-size:13px}
@@ -37,7 +37,6 @@
   .stat-box.neutral .val{color:#58a6ff}
   @media(max-width:1100px){.stats-grid{grid-template-columns:repeat(4,1fr)}}
   @media(max-width:700px){main{grid-template-columns:1fr}.stats-grid{grid-template-columns:repeat(2,1fr)}}
-  /* 退出原因标签 */
   .exit-tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;white-space:nowrap}
   .exit-panic{background:#4d1c1c;color:#f85149}
   .exit-rsi{background:#3d2e00;color:#d29922}
@@ -49,11 +48,17 @@
   .exit-force{background:#21262d;color:#8b949e}
   .exit-fail{background:#4d1c1c;color:#f85149}
   .exit-hold{background:#21262d;color:#8b949e}
+  .exit-max{background:#1a3a5c;color:#58a6ff}
+  .buy-reason{font-size:10px;color:#8b949e;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  a.gmgn{color:#58a6ff;text-decoration:none;font-size:11px}
+  a.gmgn:hover{text-decoration:underline}
+  .fdv-val{color:#d29922;font-size:11px}
+  .lp-val{color:#da8ee7;font-size:11px}
 </style>
 </head>
 <body>
 <header>
-  <h1>🤖 SOL RSI+量能 V2</h1>
+  <h1>🤖 SOL RSI+量能 V3</h1>
   <span id="mode-badge" class="badge blue">模式加载中...</span>
   <span id="ws-status" class="badge gray">⚡ 连接中...</span>
   <span id="token-count" class="badge gray">0 代币</span>
@@ -80,8 +85,9 @@
     <h2>实时行情</h2>
     <table id="tbl-tokens">
       <thead><tr>
-        <th>代币</th><th>合约</th><th>价格</th><th>RSI</th><th>prevRSI</th>
-        <th>Buy/Sell</th><th>信号</th><th>原因</th><th>K线数</th><th>状态</th><th>到期</th>
+        <th>代币</th><th>合约</th><th>价格</th><th>FDV</th><th>LP</th>
+        <th>RSI</th><th>prevRSI</th><th>Buy/Sell</th><th>信号</th><th>原因</th>
+        <th>K线</th><th>交易</th><th>状态</th><th>剩余</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -100,7 +106,10 @@
   <div class="card" style="grid-column:1/-1">
     <h2>成交记录 <span id="pnl-summary" style="font-size:11px;color:#8b949e;margin-left:8px"></span></h2>
     <table id="tbl-records">
-      <thead><tr><th>代币</th><th>买入SOL</th><th>卖出SOL</th><th>PnL(SOL)</th><th>PnL%</th><th>退出原因</th></tr></thead>
+      <thead><tr>
+        <th>代币</th><th>合约</th><th>买入原因</th>
+        <th>买入SOL</th><th>卖出SOL</th><th>PnL(SOL)</th><th>PnL%</th><th>退出原因</th><th>时间</th>
+      </tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -117,9 +126,13 @@ const rows   = {};
 const logMax = 100;
 
 function fmt(n, d=6){ return n==null?'-':Number(n).toFixed(d) }
-function fmtTime(ts){ return new Date(ts).toLocaleTimeString() }
+function fmtTime(ts){ return ts ? new Date(ts).toLocaleTimeString() : '-' }
+function fmtDate(ts){ return ts ? new Date(ts).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '-' }
 function rsiClass(r){ return r>70?'rsi-hi':r<30?'rsi-lo':'rsi-mid' }
 function volClass(b,s){ return b>s?'vol-hi':'vol-lo' }
+function fmtFdv(v){ if(v==null||v===undefined)return'-'; if(v>=1e6)return'$'+(v/1e6).toFixed(1)+'M'; if(v>=1e3)return'$'+(v/1e3).toFixed(0)+'K'; return'$'+v.toFixed(0) }
+function addrShort(a){ return a ? a.slice(0,4)+'...'+a.slice(-4) : '-' }
+function gmgnUrl(a){ return `https://gmgn.ai/sol/token/${a}` }
 
 function connect(){
   const ws = new WebSocket(`ws://${location.host}`);
@@ -133,7 +146,6 @@ function connect(){
     fetch('/api/dashboard').then(r=>r.json()).then(d=>{
       (d.tokens||[]).forEach(t => updateTokenRow(t));
       document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
-      // DRY_RUN mode
       const modeBadge = document.getElementById('mode-badge');
       if (d.dryRun) {
         modeBadge.textContent = '🔵 空跑模式';
@@ -190,23 +202,28 @@ function handleTick(d){
   }
   const sig = d.signal || 'none';
   const rsi = d.rsi;
-  const addrShort = d.address ? d.address.slice(0,4)+'...'+d.address.slice(-4) : '-';
-  const gmgnUrl = `https://gmgn.ai/sol/token/${d.address}`;
   const bv = d.volume?.buyVol ?? 0;
   const sv = d.volume?.sellVol ?? 0;
   const bsStr = (bv+sv) > 0 ? `${bv.toFixed(1)}/${sv.toFixed(1)}` : '-';
+  const coolStr = d.cooldown > 0 ? `<span class="badge yellow">${d.cooldown}s</span>` : '';
+  const posStr = d.inPosition
+    ? '<span class="badge green">持仓</span>'
+    : (d.cooldown > 0 ? '<span class="badge yellow">冷却</span>' : '<span class="badge gray">观望</span>');
 
   tr.innerHTML = `
     <td>${d.symbol}</td>
-    <td><a href="${gmgnUrl}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:11px" title="${d.address}">${addrShort}</a></td>
+    <td><a href="${gmgnUrl(d.address)}" target="_blank" class="gmgn" title="${d.address}">${addrShort(d.address)}</a></td>
     <td>${fmt(d.price,8)}</td>
+    <td class="fdv-val">${fmtFdv(d.fdv)}</td>
+    <td class="lp-val">${fmtFdv(d.lp)}</td>
     <td class="${rsiClass(rsi)}">${rsi==null?'预热':rsi.toFixed(2)}</td>
     <td class="${rsiClass(d.prevRsi)}">${d.prevRsi==null?'-':d.prevRsi.toFixed(2)}</td>
     <td class="${volClass(bv,sv)}" title="Buy/Sell SOL (${d.volume?.windowSec||30}s)">${bsStr}</td>
     <td class="${sig.toLowerCase()}">${sig}</td>
-    <td style="color:#8b949e;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.reason||''}">${d.reason||''}</td>
+    <td style="color:#8b949e;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.reason||''}">${d.reason||''}</td>
     <td>${d.closedCount??'-'}</td>
-    <td>${d.inPosition?'<span class="badge green">持仓</span>':'<span class="badge gray">观望</span>'}</td>
+    <td style="font-size:11px">${d.tradeCount||0}/${d.maxTrades||5}</td>
+    <td>${posStr}</td>
     <td style="color:#8b949e;font-size:11px">${fmtTime(d.ts)}</td>
   `;
   updateCount();
@@ -231,7 +248,7 @@ function addLogRow(d){
   const tr = document.createElement('tr');
   tr.innerHTML = `
     <td>${fmtTime(d.ts)}</td>
-    <td class="${(d.type||'').toLowerCase()}">${d.type}</td>
+    <td class="${(d.type||'').toLowerCase()}">${d.type}${d.tradeNum ? ' #'+d.tradeNum : ''}</td>
     <td>${d.symbol}</td>
     <td>${fmt(d.price,8)}</td>
     <td style="color:#8b949e;font-size:11px">${d.reason||''}</td>
@@ -241,6 +258,32 @@ function addLogRow(d){
   while(tbody.children.length > logMax) tbody.removeChild(tbody.lastChild);
 }
 
+function fmtBuyReason(reason) {
+  if (!reason) return '-';
+  // 提取 RSI 值和量能信息用友好格式显示
+  // 例如: RSI_OVERSOLD(25.3≤30)+BUY>SELL(1.20>0.80,60%,30s)
+  const rsiMatch = reason.match(/RSI_OVERSOLD\(([^)]+)\)/);
+  const volMatch = reason.match(/BUY>SELL\(([^)]+)\)/);
+  const noDataMatch = reason.includes('VOL_NO_DIRECTION_DATA');
+
+  let parts = [];
+  if (rsiMatch) parts.push(`RSI=${rsiMatch[1].split('≤')[0]}`);
+  if (volMatch) {
+    const volParts = volMatch[1].split(',');
+    if (volParts.length >= 2) {
+      parts.push(`B/S=${volParts[0]}`);
+      if (volParts[1]) parts.push(volParts[1]);
+    }
+  } else if (noDataMatch) {
+    parts.push('无方向数据');
+  }
+
+  if (parts.length > 0) {
+    return `<span class="buy-reason" title="${reason}">${parts.join(' ')}</span>`;
+  }
+  return `<span class="buy-reason" title="${reason}">${reason.slice(0,40)}</span>`;
+}
+
 function addRecordRow(d){
   const tbody = document.querySelector('#tbl-records tbody');
   const tr = document.createElement('tr');
@@ -248,13 +291,18 @@ function addRecordRow(d){
   const pnlSolStr = d.pnlSol != null
     ? (d.pnlSol >= 0 ? '+' : '') + d.pnlSol.toFixed(4)
     : '-';
+  const tradeNum = d.tradeNum ? ` #${d.tradeNum}` : '';
+
   tr.innerHTML = `
-    <td>${d.symbol}</td>
+    <td>${d.symbol}${tradeNum}</td>
+    <td><a href="${gmgnUrl(d.address)}" target="_blank" class="gmgn" title="${d.address}">${addrShort(d.address)}</a></td>
+    <td>${fmtBuyReason(d.buyReason)}</td>
     <td>${d.solIn != null ? d.solIn.toFixed(4) : '-'}</td>
     <td>${d.solOut != null ? d.solOut.toFixed(4) : '-'}</td>
     <td class="${(d.pnlSol??0)>=0?'buy':'sell'}">${pnlSolStr}</td>
     <td class="${p>=0?'buy':'sell'}">${p!=null?((p>=0?'+':'')+p.toFixed(2)+'%'):'-'}</td>
     <td>${fmtExitReason(d.exitReason)}</td>
+    <td style="color:#8b949e;font-size:11px">${fmtDate(d.buyAt)}</td>
   `;
   tbody.prepend(tr);
   while(tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
@@ -263,7 +311,6 @@ function addRecordRow(d){
 function fmtExitReason(reason) {
   if (!reason) return '<span class="exit-tag exit-hold">持仓中</span>';
   const r = reason;
-  // 提取括号内的具体数值
   const detail = r.match(/\(([^)]*)\)/)?.[1] || '';
 
   if (r.startsWith('RSI_PANIC'))
@@ -280,6 +327,8 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-fdv">FDV过低 ${detail}</span>`;
   if (r.includes('EXPIRED'))
     return `<span class="exit-tag exit-exp">到期退出</span>`;
+  if (r.includes('MAX_TRADES'))
+    return `<span class="exit-tag exit-max">达到上限 ${detail}</span>`;
   if (r.includes('FORCED_EXIT'))
     return `<span class="exit-tag exit-force">强制退出 ${detail}</span>`;
   if (r.includes('SELL_FAILED'))
@@ -288,7 +337,6 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-force">服务关闭</span>`;
   if (r.includes('TRADE_DONE'))
     return `<span class="exit-tag exit-hold">交易完成</span>`;
-  // 兜底
   return `<span class="exit-tag exit-hold" title="${r}">${r}</span>`;
 }
 
