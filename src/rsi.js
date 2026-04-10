@@ -10,7 +10,8 @@
 //   2. 止损检查独立于 K 线周期，每个 tick 都检查（快速止损）
 //
 // 策略：
-//   BUY : RSI(7) ≤ 30（超卖区） + 窗口内 buyVolume > sellVolume
+//   BUY : RSI(7) 上穿 30（prevRsi<30 → rsi≥30）+ buyVol ≥ 1.2×sellVol
+//         上穿时立刻检查量能，不符合就放弃该次穿越
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
 const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
@@ -21,6 +22,7 @@ const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 
 // 量能参数
 const VOL_ENABLED         = (process.env.VOL_ENABLED || 'true') === 'true';
+const VOL_BUY_MULT        = parseFloat(process.env.VOL_BUY_MULT          || '1.2'); // buyVol >= N × sellVol 才买入
 const VOL_WINDOW_SEC      = parseInt(process.env.VOL_WINDOW_SEC       || '30', 10);
 const VOL_EXIT_CONSECUTIVE = parseInt(process.env.VOL_EXIT_CONSECUTIVE || '2', 10);
 const VOL_EXIT_RATIO      = parseFloat(process.env.VOL_EXIT_RATIO     || '1.0');
@@ -95,22 +97,25 @@ function checkBuyVolume(closedCandles, currentCandle) {
   const total = totalBuy + totalSell;
   const ratio = total > 0 ? totalBuy / total : 0;
 
-  // 没有链上方向数据时放行，退化为纯 RSI
+  // 没有链上方向数据 → 拒绝买入（量能是策略必要条件）
   if (total === 0) {
-    return { pass: true, reason: 'VOL_NO_DIRECTION_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
+    return { pass: false, reason: 'VOL_NO_DIRECTION_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
   }
 
-  if (totalBuy > totalSell) {
+  // 核心条件：buyVol >= VOL_BUY_MULT × sellVol（默认 1.2 倍）
+  if (totalBuy >= totalSell * VOL_BUY_MULT) {
+    const mult = totalSell > 0 ? (totalBuy / totalSell).toFixed(1) : '∞';
     return {
       pass: true,
-      reason: `BUY>SELL(${totalBuy.toFixed(2)}>${totalSell.toFixed(2)},${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
+      reason: `BUY≥${VOL_BUY_MULT}xSELL(${totalBuy.toFixed(2)}>=${(totalSell*VOL_BUY_MULT).toFixed(2)},${mult}x,${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
       buyVol: totalBuy, sellVol: totalSell, ratio,
     };
   }
 
+  const mult = totalSell > 0 ? (totalBuy / totalSell).toFixed(1) : '0';
   return {
     pass: false,
-    reason: `SELL≥BUY(buy=${totalBuy.toFixed(2)},sell=${totalSell.toFixed(2)},${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
+    reason: `BUY<${VOL_BUY_MULT}xSELL(buy=${totalBuy.toFixed(2)},sell=${totalSell.toFixed(2)},${mult}x,${VOL_WINDOW_SEC}s)`,
     buyVol: totalBuy, sellVol: totalSell, ratio,
   };
 }
@@ -261,19 +266,29 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
+  // ★ RSI 上穿 30：prevRsi < 30 且 rsiRealtime >= 30
+  // ★ 同时检查量能：buyVol >= 1.2 × sellVol
+  // ★ 不符合就放弃这次穿越（标记 lastBuyCandle，同根K线不再检查）
   if (!tokenState.inPosition) {
-    if (rsiRealtime <= RSI_BUY && lastCandleTs !== lastBuyCandle) {
+    if (prevRsi < RSI_BUY && rsiRealtime >= RSI_BUY && lastCandleTs !== lastBuyCandle) {
+      // RSI 上穿 30，立刻检查量能
       const volCheck = checkBuyVolume(closedCandles, null);
       volumeInfo.buyVol  = volCheck.buyVol;
       volumeInfo.sellVol = volCheck.sellVol;
       volumeInfo.buyRatio = volCheck.ratio;
 
+      // 无论量能是否通过，都标记这根K线，防止同根反复触发
+      tokenState._lastBuyCandle = lastCandleTs;
+
       if (volCheck.pass) {
-        tokenState._lastBuyCandle = lastCandleTs;
         updateState();
         return { rsi: rsiRealtime, prevRsi, signal: 'BUY',
-                 reason: `RSI_OVERSOLD(${rsiRealtime.toFixed(1)}≤${RSI_BUY})+${volCheck.reason}`, volume: volumeInfo };
+                 reason: `RSI_CROSS_UP_30(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})+${volCheck.reason}`, volume: volumeInfo };
       }
+      // 量能不达标，放弃此次穿越
+      updateState();
+      return { rsi: rsiRealtime, prevRsi, signal: null,
+               reason: `RSI_CROSS_UP_30_VOL_REJECT(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})+${volCheck.reason}`, volume: volumeInfo };
     }
   }
 
@@ -400,7 +415,7 @@ module.exports = {
   checkStopLoss,
   CONFIG: {
     RSI_PERIOD, RSI_BUY, RSI_SELL, RSI_PANIC,
-    VOL_ENABLED, VOL_WINDOW_SEC,
+    VOL_ENABLED, VOL_BUY_MULT, VOL_WINDOW_SEC,
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, KLINE_SEC,

@@ -96,8 +96,12 @@ server.listen(PORT, () => {
   } else if (heliusKey || heliusRpc.includes('api-key=')) {
     logger.info('   Helius WS: ✅ 统一端点 WebSocket');
   } else {
-    logger.info('   Helius WS: ⚠️ 未配置，量能退化为 tick count');
+    logger.info('   Helius WS: ⚠️ 未配置，量能数据不可用');
   }
+  const subMode = process.env.HELIUS_SUB_MODE || 'token';
+  logger.info('   Helius 订阅: %s', subMode === 'pump'
+    ? '🟡 Pump AMM 单订阅（本地过滤）'
+    : '🟢 按 Token 精准订阅（最省 credits）');
 
   if (heliusLaser) {
     logger.info('   Helius RPC: ✅ LaserStream gRPC（仅用于 sendTransaction 加速）');
