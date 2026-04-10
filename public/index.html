@@ -213,6 +213,8 @@ function refreshLogs() {
 
 function refreshRecords() {
   fetch('/api/trade-records').then(r=>r.json()).then(records=>{
+    // 按买入时间倒序（最新的在前）
+    records.sort((a, b) => (b.buyAt || 0) - (a.buyAt || 0));
     _allRecords = records;
     renderRecordsPage();
     updatePnlSummary(records);
