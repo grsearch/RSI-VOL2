@@ -152,34 +152,8 @@ function connect(){
   ws.onopen = () => {
     document.getElementById('ws-status').textContent = '✅ 已连接';
     document.getElementById('ws-status').className = 'badge green';
-
-    fetch('/api/dashboard').then(r=>r.json()).then(d=>{
-      (d.tokens||[]).forEach(t => updateTokenRow(t));
-      document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
-      const modeBadge = document.getElementById('mode-badge');
-      if (d.dryRun) {
-        modeBadge.textContent = '🔵 空跑模式';
-        modeBadge.className = 'badge blue';
-      } else {
-        modeBadge.textContent = '🔴 实盘模式';
-        modeBadge.className = 'badge red';
-      }
-    });
-    fetch('/api/trades').then(r=>r.json()).then(logs => {
-      logs.slice(0,50).reverse().forEach(addLogRow);
-    });
-    fetch('/api/trade-records').then(r=>r.json()).then(records=>{
-      _allRecords = records;
-      _recPage = 0;
-      renderRecordsPage();
-      updatePnlSummary(records);
-      updateStats(records);
-    });
-    fetch('/api/reports').then(r=>r.json()).then(renderReports);
-    fetch('/api/data-stats').then(r=>r.json()).then(d=>{
-      document.getElementById('data-stats').textContent =
-        `数据: ${d.tickFiles}币 ${d.tradeCount}笔 ${d.signalCount}信号`;
-    });
+    // 每次连接（含重连）都刷新全量数据
+    refreshAll();
   };
 
   ws.onclose = () => {
@@ -203,6 +177,52 @@ function connect(){
     if (d.type === 'token_list')   handleTokenList(d.tokens);
   };
 }
+
+// ── 全量刷新 ──
+function refreshAll() {
+  fetch('/api/dashboard').then(r=>r.json()).then(d=>{
+    (d.tokens||[]).forEach(t => updateTokenRow(t));
+    document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
+    const modeBadge = document.getElementById('mode-badge');
+    if (d.dryRun) {
+      modeBadge.textContent = '🔵 空跑模式';
+      modeBadge.className = 'badge blue';
+    } else {
+      modeBadge.textContent = '🔴 实盘模式';
+      modeBadge.className = 'badge red';
+    }
+  }).catch(()=>{});
+
+  refreshLogs();
+  refreshRecords();
+
+  fetch('/api/reports').then(r=>r.json()).then(renderReports).catch(()=>{});
+  fetch('/api/data-stats').then(r=>r.json()).then(d=>{
+    document.getElementById('data-stats').textContent =
+      `数据: ${d.tickFiles}币 ${d.tradeCount}笔 ${d.signalCount}信号`;
+  }).catch(()=>{});
+}
+
+function refreshLogs() {
+  fetch('/api/trades').then(r=>r.json()).then(logs => {
+    const tbody = document.querySelector('#tbl-log tbody');
+    tbody.innerHTML = '';
+    logs.slice(0, logMax).reverse().forEach(addLogRow);
+  }).catch(()=>{});
+}
+
+function refreshRecords() {
+  fetch('/api/trade-records').then(r=>r.json()).then(records=>{
+    _allRecords = records;
+    renderRecordsPage();
+    updatePnlSummary(records);
+    updateStats(records);
+  }).catch(()=>{});
+}
+
+// ── 定时自动刷新（兜底，防止 WS 推送遗漏） ──
+setInterval(refreshRecords, 15000);   // 成交记录 15秒刷新
+setInterval(refreshLogs, 30000);      // 交易日志 30秒刷新
 
 function handleTick(d){
   const tbody = document.querySelector('#tbl-tokens tbody');
