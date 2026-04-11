@@ -119,6 +119,84 @@
     </div>
   </div>
 
+  <!-- 回测面板 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>策略回测 <span style="font-size:11px;color:#8b949e;margin-left:8px" id="bt-data-info"></span></h2>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px">
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">K线(秒)</label>
+        <input type="number" id="bt-kline" value="3" min="1" max="60" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 周期</label>
+        <input type="number" id="bt-rsiperiod" value="7" min="2" max="30" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 买入 &lt;</label>
+        <input type="number" id="bt-rsibuy" value="35" min="5" max="50" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 卖出 &gt;</label>
+        <input type="number" id="bt-rsisell" value="70" min="50" max="95" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 恐慌 &gt;</label>
+        <input type="number" id="bt-rsipanic" value="80" min="60" max="99" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Buy/Sell 倍数 ≥</label>
+        <input type="number" id="bt-volmult" value="1.2" min="1" max="10" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">最低成交量(SOL) ≥</label>
+        <input type="number" id="bt-voltotal" value="10" min="0" max="100" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">量能窗口(秒)</label>
+        <input type="number" id="bt-volwindow" value="30" min="5" max="120" step="5" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止损 %</label>
+        <input type="number" id="bt-stoploss" value="-10" min="-50" max="0" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止盈 %</label>
+        <input type="number" id="bt-takeprofit" value="99999" min="10" max="99999" step="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">跳过前N根K线</label>
+        <input type="number" id="bt-skip" value="8" min="0" max="30" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">萎缩阈值 &lt;</label>
+        <input type="number" id="bt-decayratio" value="0.3" min="0.1" max="1.0" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">萎缩连续根数</label>
+        <input type="number" id="bt-decaycons" value="3" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">最大交易次数</label>
+        <input type="number" id="bt-maxtrades" value="5" min="1" max="20" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button onclick="runBacktest()" id="bt-run-btn" style="width:100%;background:#1a4731;border:1px solid #3fb950;color:#3fb950;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold">▶ 运行回测</button>
+      </div>
+    </div>
+    <!-- 回测结果 -->
+    <div id="bt-results" style="display:none">
+      <div id="bt-summary" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px"></div>
+      <div style="max-height:300px;overflow-y:auto">
+        <table id="bt-trades" style="width:100%">
+          <thead><tr><th>代币</th><th>入场价</th><th>出场价</th><th>持仓K线</th><th>PnL(SOL)</th><th>PnL%</th><th>退出原因</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="bt-loading" style="display:none;text-align:center;padding:20px;color:#8b949e">⏳ 回测中...</div>
+    <div id="bt-empty" style="display:none;text-align:center;padding:20px;color:#8b949e">暂无 tick 数据，请先运行监控收集数据</div>
+  </div>
+
   <!-- 报告 -->
   <div class="card" style="grid-column:1/-1">
     <h2>每日报告 <span style="font-size:11px;color:#8b949e">每天08:00(北京时间)自动生成</span></h2>
@@ -465,7 +543,102 @@ function renderReports(reports) {
   ).join('');
 }
 
+// ── 回测 ──────────────────────────────────────────────────────
+
+function loadBtDataInfo() {
+  fetch('/api/backtest/data').then(r=>r.json()).then(d=>{
+    const el = document.getElementById('bt-data-info');
+    if (el) el.textContent = `${d.tickFiles}个币的数据 | ${d.tradeCount}笔历史交易`;
+    if (d.tickFiles === 0) document.getElementById('bt-empty').style.display = '';
+  }).catch(()=>{});
+}
+
+function runBacktest() {
+  const btn = document.getElementById('bt-run-btn');
+  btn.disabled = true; btn.textContent = '⏳ 回测中...';
+  document.getElementById('bt-loading').style.display = '';
+  document.getElementById('bt-results').style.display = 'none';
+  document.getElementById('bt-empty').style.display = 'none';
+
+  const params = {
+    klineSec:           parseInt(document.getElementById('bt-kline').value),
+    rsiPeriod:          parseInt(document.getElementById('bt-rsiperiod').value),
+    rsiBuy:             parseFloat(document.getElementById('bt-rsibuy').value),
+    rsiSell:            parseFloat(document.getElementById('bt-rsisell').value),
+    rsiPanic:           parseFloat(document.getElementById('bt-rsipanic').value),
+    volBuyMult:         parseFloat(document.getElementById('bt-volmult').value),
+    volMinTotal:        parseFloat(document.getElementById('bt-voltotal').value),
+    volWindowSec:       parseInt(document.getElementById('bt-volwindow').value),
+    stopLossPct:        parseFloat(document.getElementById('bt-stoploss').value),
+    takeProfitPct:      parseFloat(document.getElementById('bt-takeprofit').value),
+    skipFirstCandles:   parseInt(document.getElementById('bt-skip').value),
+    volExitRatio:       parseFloat(document.getElementById('bt-decayratio').value),
+    volExitConsecutive: parseInt(document.getElementById('bt-decaycons').value),
+    maxTrades:          parseInt(document.getElementById('bt-maxtrades').value),
+    volEnabled:         true,
+    tradeSizeSol:       0.2,
+  };
+
+  fetch('/api/backtest/run', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(params),
+  }).then(r=>r.json()).then(data => {
+    btn.disabled = false; btn.textContent = '▶ 运行回测';
+    document.getElementById('bt-loading').style.display = 'none';
+
+    if (data.error || !data.summary || data.summary.totalTrades === 0) {
+      document.getElementById('bt-empty').style.display = '';
+      document.getElementById('bt-empty').textContent = data.error || '此参数组合无交易产生';
+      return;
+    }
+
+    document.getElementById('bt-results').style.display = '';
+    const s = data.summary;
+
+    // 汇总卡片
+    const sumEl = document.getElementById('bt-summary');
+    const pnlClass = s.totalPnlSol > 0 ? 'profit' : s.totalPnlSol < 0 ? 'loss' : 'neutral';
+    const wrClass = s.winRate >= 50 ? 'profit' : 'loss';
+    sumEl.innerHTML = `
+      <div class="stat-box neutral"><div class="val">${s.totalTrades}</div><div class="lbl">总交易</div></div>
+      <div class="stat-box ${wrClass}"><div class="val">${s.winRate.toFixed(1)}%</div><div class="lbl">胜率</div></div>
+      <div class="stat-box profit"><div class="val">${s.wins}</div><div class="lbl">盈利</div></div>
+      <div class="stat-box loss"><div class="val">${s.losses}</div><div class="lbl">亏损</div></div>
+      <div class="stat-box ${pnlClass}"><div class="val">${s.totalPnlSol>=0?'+':''}${s.totalPnlSol.toFixed(4)}</div><div class="lbl">总PnL(SOL)</div></div>
+      <div class="stat-box ${s.avgPnlPct>=0?'profit':'loss'}"><div class="val">${s.avgPnlPct>=0?'+':''}${s.avgPnlPct.toFixed(2)}%</div><div class="lbl">平均PnL%</div></div>
+      <div class="stat-box profit"><div class="val">+${s.avgWinPct.toFixed(2)}%</div><div class="lbl">平均赢利</div></div>
+      <div class="stat-box loss"><div class="val">${s.avgLossPct.toFixed(2)}%</div><div class="lbl">平均亏损</div></div>
+    `;
+
+    // 交易明细
+    const tbody = document.querySelector('#bt-trades tbody');
+    tbody.innerHTML = '';
+    const allTrades = data.results.flatMap(r => r.trades.map(t => ({...t, address: r.address})));
+    allTrades.sort((a,b) => (b.pnlPct) - (a.pnlPct));
+    for (const t of allTrades) {
+      const tr = document.createElement('tr');
+      const icon = t.pnlSol > 0 ? '🟢' : t.pnlSol < 0 ? '🔴' : '⚪';
+      tr.innerHTML = `
+        <td>${icon} <a href="https://gmgn.ai/sol/token/${t.address||''}" target="_blank" class="gmgn">${(t.address||'').slice(0,6)}...</a></td>
+        <td>${t.entryPrice?.toFixed(8) || '-'}</td>
+        <td>${t.exitPrice?.toFixed(8) || '-'}</td>
+        <td>${t.holdBars}</td>
+        <td class="${t.pnlSol>=0?'buy':'sell'}">${t.pnlSol>=0?'+':''}${t.pnlSol.toFixed(4)}</td>
+        <td class="${t.pnlPct>=0?'buy':'sell'}">${t.pnlPct>=0?'+':''}${t.pnlPct.toFixed(2)}%</td>
+        <td style="font-size:11px;color:#8b949e">${t.exitReason||'-'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }).catch(err => {
+    btn.disabled = false; btn.textContent = '▶ 运行回测';
+    document.getElementById('bt-loading').style.display = 'none';
+    alert('回测失败: ' + err.message);
+  });
+}
+
 connect();
+loadBtDataInfo();
 </script>
 </body>
 </html>

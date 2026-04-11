@@ -11,7 +11,7 @@
 //
 // 所有参数都可通过命令行覆盖 .env 中的值。
 
-require('dotenv').config();
+try { require('dotenv').config(); } catch (_) {}
 
 const fs   = require('fs');
 const path = require('path');
@@ -45,7 +45,9 @@ function runBacktest(ticks, params) {
     takeProfitPct  = 50,
     stopLossPct    = -10,
     tradeSizeSol   = 0.2,
-    maxTrades      = 5,            // ★ 每个 token 最大交易次数
+    maxTrades      = 5,
+    volBuyMult     = 1.2,          // buyVol >= N × sellVol
+    volMinTotal    = 10,           // 最低总成交量(SOL)
   } = params;
 
   if (!ticks || ticks.length === 0) return null;
@@ -219,9 +221,8 @@ function runBacktest(ticks, params) {
         if (trades.length >= maxTrades) break;  // 达到最大交易次数才退出
       }
     } else {
-      // BUY 条件（方案B）：RSI 处于超卖区（≤ rsiBuy）+ 窗口内 buy > sell
-      // ★ 冷却期检查
-      if (rsi <= rsiBuy && i >= cooldownUntil) {
+      // BUY: RSI < rsiBuy + totalVol >= volMinTotal + buyVol >= volBuyMult × sellVol
+      if (rsi < rsiBuy && i >= cooldownUntil) {
         let volPass = true;
 
         if (volEnabled) {
@@ -235,10 +236,13 @@ function runBacktest(ticks, params) {
             totalSell += (c.sellVolume || 0);
           }
 
-          // 有方向数据时要求 buy > sell，无数据时放行
-          if (totalBuy + totalSell > 0 && totalBuy <= totalSell) {
-            volPass = false;
-          }
+          const totalVol = totalBuy + totalSell;
+          // 无数据 → 拒绝
+          if (totalVol === 0) { volPass = false; }
+          // 最低成交量门槛
+          else if (totalVol < volMinTotal) { volPass = false; }
+          // 买卖比
+          else if (totalBuy < totalSell * volBuyMult) { volPass = false; }
         }
 
         if (volPass) {
@@ -572,4 +576,10 @@ function main() {
   }
 }
 
-main();
+// 导出供 API 使用
+module.exports = { runBacktest };
+
+// 只在直接运行时执行 main
+if (require.main === module) {
+  main();
+}
