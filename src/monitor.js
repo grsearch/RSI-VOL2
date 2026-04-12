@@ -227,7 +227,7 @@ class TokenMonitor extends EventEmitter {
       // 用最新的 Birdeye USD 价格做止损判断（链上 priceSol 单位不同，不能直接比）
       // 但如果有卖出交易且价格大幅下跌，说明市场在抛售
       const lastUsd = state._lastPriceUsd;
-      if (lastUsd && trade.isBuy === false && trade.solAmount > 0.5) {
+      if (lastUsd && trade.isBuy === false && trade.solAmount > 5) {
         // 大额卖出交易 → 触发紧急价格刷新
         this._urgentStopCheck(address, state);
       }
