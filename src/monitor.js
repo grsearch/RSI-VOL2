@@ -342,7 +342,14 @@ class TokenMonitor extends EventEmitter {
 
     // 10. 执行信号
     if (signal === 'BUY' && !state.inPosition && this._canBuy(state, now)) {
-      await this._doBuy(state, price, reason);
+      // ★ 买入前强制刷新 FDV 检查
+      const freshFdv = await birdeye.getFdv(address);
+      if (freshFdv !== null && Number.isFinite(freshFdv) && freshFdv < FDV_EXIT) {
+        logger.warn('[Monitor] %s 买入被拒: FDV=$%d < $%d', state.symbol, Math.round(freshFdv), FDV_EXIT);
+      } else {
+        state.fdv = freshFdv ?? state.fdv;  // 更新最新 FDV
+        await this._doBuy(state, price, reason);
+      }
     } else if (signal === 'SELL' && state.inPosition && !state._selling) {
       await this._doSell(state, reason);
     }
