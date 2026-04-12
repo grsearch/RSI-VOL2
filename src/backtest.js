@@ -31,257 +31,237 @@ const TICKS_DIR = path.join(DATA_DIR, 'ticks');
 
 function runBacktest(ticks, params) {
   const {
-    rsiPeriod      = 7,
-    rsiBuy         = 30,
+    rsiPeriod      = 4,
+    rsiBuy         = 35,
     rsiSell        = 70,
     rsiPanic       = 80,
-    klineSec       = 15,
+    klineSec       = 5,
     volEnabled     = true,
-    volWindowSec   = 30,
-    volExitConsecutive = 2,
-    volExitRatio   = 1.0,
+    volWindowSec   = 15,
+    volExitConsecutive = 3,
+    volExitRatio   = 0.3,
     volExitLookback = 4,
     skipFirstCandles = 8,
-    takeProfitPct  = 50,
+    takeProfitPct  = 99999,
     stopLossPct    = -10,
     tradeSizeSol   = 0.2,
     maxTrades      = 5,
-    volBuyMult     = 1.2,          // buyVol >= N × sellVol
-    volMinTotal    = 10,           // 最低总成交量(SOL)
+    volBuyMult     = 1.2,
+    volMinTotal    = 5,
+    sellCooldownSec = 30,
   } = params;
 
   if (!ticks || ticks.length === 0) return null;
 
-  // 构建K线（V3：区分价格 tick 和链上交易 tick）
-  // 价格 tick (source='price' 或无 source 且无 solAmount)：构成 OHLC
-  // 链上 tick (source='chain' 或有 solAmount)：只贡献 volume/buyVolume/sellVolume
+  // ── Wilder RSI 工具 ──────────────────────────────────────────
+  function stepRSI(ag, al, lastClose, newPrice, period) {
+    if (!Number.isFinite(ag) || !Number.isFinite(al)) return NaN;
+    const d = newPrice - lastClose;
+    const nag = (ag * (period-1) + (d>0?d:0)) / period;
+    const nal = (al * (period-1) + (d<0?Math.abs(d):0)) / period;
+    return nal === 0 ? 100 : 100 - 100 / (1 + nag / nal);
+  }
+
+  // ── 构建 K 线（区分 price / chain tick） ───────────────────
   const intervalMs = klineSec * 1000;
-  const candles    = [];
-  let currentCandle = null;
+  const allCandles = [];
+  let curCandle = null;
 
   for (const tick of ticks) {
     const bucket = Math.floor(tick.ts / intervalMs) * intervalMs;
-    // 判断是否为链上交易 tick
-    const isChainTick = tick.source === 'chain' || (tick.solAmount && tick.source !== 'price');
+    const isChain = tick.source === 'chain' || (tick.solAmount && tick.source !== 'price');
 
-    if (!currentCandle || currentCandle.openTime !== bucket) {
-      if (currentCandle) candles.push(currentCandle);
-      if (isChainTick) {
-        currentCandle = {
-          openTime: bucket, closeTime: bucket + intervalMs,
-          open: null, high: null, low: null, close: null,
-          volume: tick.solAmount || 0,
-          buyVolume: tick.isBuy ? (tick.solAmount || 0) : 0,
-          sellVolume: !tick.isBuy ? (tick.solAmount || 0) : 0,
-          tickCount: 1,
-        };
-      } else {
-        currentCandle = {
-          openTime: bucket, closeTime: bucket + intervalMs,
-          open: tick.price, high: tick.price, low: tick.price, close: tick.price,
-          volume: 0,
-          buyVolume: 0,
-          sellVolume: 0,
-          tickCount: 1,
-        };
-      }
+    if (!curCandle || curCandle.openTime !== bucket) {
+      if (curCandle) allCandles.push(curCandle);
+      curCandle = {
+        openTime: bucket, closeTime: bucket + intervalMs,
+        open: isChain ? null : tick.price,
+        high: isChain ? null : tick.price,
+        low:  isChain ? null : tick.price,
+        close: isChain ? null : tick.price,
+        volume:     isChain ? (tick.solAmount || 0) : 0,
+        buyVolume:  isChain && tick.isBuy  ? (tick.solAmount || 0) : 0,
+        sellVolume: isChain && !tick.isBuy ? (tick.solAmount || 0) : 0,
+      };
     } else {
-      if (isChainTick) {
-        currentCandle.volume += (tick.solAmount || 0);
-        currentCandle.buyVolume += (tick.isBuy ? (tick.solAmount || 0) : 0);
-        currentCandle.sellVolume += (!tick.isBuy ? (tick.solAmount || 0) : 0);
-        currentCandle.tickCount++;
+      if (isChain) {
+        curCandle.volume     += (tick.solAmount || 0);
+        curCandle.buyVolume  += tick.isBuy  ? (tick.solAmount || 0) : 0;
+        curCandle.sellVolume += !tick.isBuy ? (tick.solAmount || 0) : 0;
       } else {
-        if (currentCandle.open === null) {
-          currentCandle.open = tick.price;
-          currentCandle.high = tick.price;
-          currentCandle.low  = tick.price;
-          currentCandle.close = tick.price;
+        if (curCandle.open === null) {
+          curCandle.open = curCandle.high = curCandle.low = curCandle.close = tick.price;
         } else {
-          if (tick.price > currentCandle.high) currentCandle.high = tick.price;
-          if (tick.price < currentCandle.low)  currentCandle.low  = tick.price;
-          currentCandle.close = tick.price;
+          if (tick.price > curCandle.high) curCandle.high = tick.price;
+          if (tick.price < curCandle.low)  curCandle.low  = tick.price;
+          curCandle.close = tick.price;
         }
-        currentCandle.tickCount++;
       }
     }
   }
-  if (currentCandle) candles.push(currentCandle);
+  if (curCandle) allCandles.push(curCandle);
 
-  // 过滤掉没有价格数据的 K 线（V3 修复）
-  const validCandles = candles.filter(c => c.open !== null && c.close !== null);
-  // 替换 candles 引用（后续代码使用 candles 变量名不变）
-  candles.length = 0;
-  candles.push(...validCandles);
-
+  const candles = allCandles.filter(c => c.open !== null && c.close !== null);
   if (candles.length < rsiPeriod + 2) return null;
 
-  // RSI 计算
+  // ── 计算每根已收盘 K 线的 RSI + avgGain/avgLoss ──────────
   const closes = candles.map(c => c.close);
   const rsiArray = new Array(closes.length).fill(NaN);
+  const agArray  = new Array(closes.length).fill(NaN);
+  const alArray  = new Array(closes.length).fill(NaN);
 
   if (closes.length >= rsiPeriod + 1) {
-    let gainSum = 0, lossSum = 0;
+    let gs = 0, ls = 0;
     for (let i = 1; i <= rsiPeriod; i++) {
-      const diff = closes[i] - closes[i - 1];
-      if (diff > 0) gainSum += diff;
-      else lossSum += Math.abs(diff);
+      const d = closes[i] - closes[i-1];
+      if (d > 0) gs += d; else ls += Math.abs(d);
     }
-    let avgGain = gainSum / rsiPeriod;
-    let avgLoss = lossSum / rsiPeriod;
-    rsiArray[rsiPeriod] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    let ag = gs / rsiPeriod, al = ls / rsiPeriod;
+    rsiArray[rsiPeriod] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+    agArray[rsiPeriod] = ag; alArray[rsiPeriod] = al;
 
     for (let i = rsiPeriod + 1; i < closes.length; i++) {
-      const diff = closes[i] - closes[i - 1];
-      const gain = diff > 0 ? diff : 0;
-      const loss = diff < 0 ? Math.abs(diff) : 0;
-      avgGain = (avgGain * (rsiPeriod - 1) + gain) / rsiPeriod;
-      avgLoss = (avgLoss * (rsiPeriod - 1) + loss) / rsiPeriod;
-      rsiArray[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+      const d = closes[i] - closes[i-1];
+      ag = (ag * (rsiPeriod-1) + (d>0?d:0)) / rsiPeriod;
+      al = (al * (rsiPeriod-1) + (d<0?Math.abs(d):0)) / rsiPeriod;
+      rsiArray[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+      agArray[i] = ag; alArray[i] = al;
     }
   }
 
-  // 模拟交易
+  // ── 提取价格 tick 序列 ──────────────────────────────────────
+  const priceTicks = ticks.filter(t => {
+    if (t.source === 'chain') return false;
+    if (t.solAmount && t.source !== 'price') return false;
+    return t.price && t.price > 0;
+  });
+
+  if (priceTicks.length === 0) return null;
+
+  // ── 逐 tick 模拟（与 live evaluateSignal 完全一致） ────────
   const trades = [];
   let inPosition = false;
-  let entryPrice  = 0;
-  let entryIdx    = 0;
-  let prevRsi     = NaN;
+  let entryPrice = 0, entryTime = 0;
+  let prevRsiRT  = NaN;
+  let lastBuyCandle = -1, lastSellCandle = -1;
+  let cooldownUntil = 0;
   let volDecayCount = 0;
-  let cooldownUntil = 0;   // ★ 冷却到期K线索引
+  const windowBars = Math.max(1, Math.ceil(volWindowSec / klineSec));
 
-  for (let i = 1; i < candles.length; i++) {
-    const rsi = rsiArray[i];
-    if (!Number.isFinite(rsi) || !Number.isFinite(prevRsi)) {
-      prevRsi = rsi;
-      continue;
+  // 查找 ts 对应的最新已收盘 K 线索引
+  function closedIdx(ts) {
+    for (let i = candles.length - 1; i >= 0; i--) {
+      if (candles[i].closeTime <= ts) return i;
     }
+    return -1;
+  }
 
-    // 跳过前N根K线
-    if (i < skipFirstCandles) {
-      prevRsi = rsi;
-      continue;
-    }
+  for (const tick of priceTicks) {
+    const price = tick.price;
+    const ts    = tick.ts;
 
-    const price = candles[i].close;
+    const ci = closedIdx(ts);
+    if (ci < rsiPeriod + 1 || ci < skipFirstCandles) continue;
 
+    // ★ stepRSI 实时外推（与 live 一致）
+    const rsiRT = stepRSI(agArray[ci], alArray[ci], closes[ci], price, rsiPeriod);
+    if (!Number.isFinite(rsiRT)) { prevRsiRT = rsiRT; continue; }
+
+    const prevRsi = Number.isFinite(prevRsiRT) ? prevRsiRT : rsiArray[ci];
+    const candleOT = candles[ci].openTime;
+
+    // ── SELL ──────────────────────────────────────────────
     if (inPosition) {
       let exitReason = null;
-      const pnl = (price - entryPrice) / entryPrice * 100;
 
-      // SELL 条件
-      if (rsi > rsiPanic) {
-        exitReason = `RSI_PANIC(${rsi.toFixed(1)})`;
-      } else if (prevRsi >= rsiSell && rsi < rsiSell) {
-        exitReason = `RSI_CROSS_DOWN(${prevRsi.toFixed(1)}→${rsi.toFixed(1)})`;
-      } else if (pnl >= takeProfitPct) {
-        exitReason = `TAKE_PROFIT(${pnl.toFixed(1)}%)`;
-      } else if (pnl <= stopLossPct) {
-        exitReason = `STOP_LOSS(${pnl.toFixed(1)}%)`;
+      // RSI > panic
+      if (rsiRT > rsiPanic && candleOT !== lastSellCandle) {
+        lastSellCandle = candleOT;
+        exitReason = `RSI_PANIC(${rsiRT.toFixed(1)})`;
       }
-
-      // 量能萎缩出场
-      if (!exitReason && volEnabled && i >= volExitLookback + volExitConsecutive) {
-        const avgEnd = i - volExitConsecutive + 1;
-        const avgStart = Math.max(0, avgEnd - volExitLookback);
-        const avgCandles = candles.slice(avgStart, avgEnd);
-        const avgVol = avgCandles.reduce((s, c) => s + (c.volume || 0), 0) / avgCandles.length;
-
-        if (avgVol > 0 && (candles[i].volume || 0) < avgVol * volExitRatio) {
+      // RSI 下穿 sell
+      if (!exitReason && prevRsi >= rsiSell && rsiRT < rsiSell && candleOT !== lastSellCandle) {
+        lastSellCandle = candleOT;
+        exitReason = `RSI_CROSS_DOWN(${prevRsi.toFixed(1)}→${rsiRT.toFixed(1)})`;
+      }
+      // 止盈/止损（逐 tick）
+      if (!exitReason) {
+        const pnl = (price - entryPrice) / entryPrice * 100;
+        if (pnl >= takeProfitPct) exitReason = `TAKE_PROFIT(${pnl.toFixed(1)}%)`;
+        else if (pnl <= stopLossPct) exitReason = `STOP_LOSS(${pnl.toFixed(1)}%)`;
+      }
+      // 量能萎缩
+      if (!exitReason && volEnabled && ci >= volExitLookback + volExitConsecutive) {
+        const ae = ci - volExitConsecutive + 1;
+        const as = Math.max(0, ae - volExitLookback);
+        const avgVol = candles.slice(as, ae).reduce((s,c) => s + (c.volume||0), 0) / (ae - as);
+        if (avgVol > 0 && (candles[ci].volume||0) < avgVol * volExitRatio) {
           volDecayCount++;
           if (volDecayCount >= volExitConsecutive) {
-            exitReason = `VOL_DECAY(${volDecayCount}根)`;
+            const rv = candles.slice(ci-volExitConsecutive+1, ci+1).map(c=>(c.volume||0).toFixed(0));
+            exitReason = `VOL_DECAY(recent=[${rv}])`;
           }
-        } else {
-          volDecayCount = 0;
-        }
+        } else { volDecayCount = 0; }
       }
 
       if (exitReason) {
         const solOut = tradeSizeSol * (price / entryPrice);
         trades.push({
-          entryIdx,
-          exitIdx: i,
-          entryPrice,
-          exitPrice: price,
-          entryTime: candles[entryIdx].openTime,
-          exitTime: candles[i].openTime,
-          holdBars: i - entryIdx,
-          solIn: tradeSizeSol,
-          solOut,
+          entryPrice, exitPrice: price, entryTime, exitTime: ts,
+          holdMs: ts - entryTime,
+          solIn: tradeSizeSol, solOut,
           pnlSol: solOut - tradeSizeSol,
           pnlPct: (price - entryPrice) / entryPrice * 100,
-          exitReason,
-          tradeNum: trades.length + 1,
+          exitReason, tradeNum: trades.length + 1,
         });
         inPosition = false;
         volDecayCount = 0;
-        // ★ 多次交易：卖出后冷却 2 根K线，不再 break
-        cooldownUntil = i + Math.max(1, Math.ceil(30 / klineSec));  // 冷却 30 秒 ≈ 2 根K线
-        if (trades.length >= maxTrades) break;  // 达到最大交易次数才退出
+        cooldownUntil = ts + sellCooldownSec * 1000;
+        lastBuyCandle = lastSellCandle = -1;
+        if (trades.length >= maxTrades) break;
       }
-    } else {
-      // BUY: RSI < rsiBuy + totalVol >= volMinTotal + buyVol >= volBuyMult × sellVol
-      if (rsi < rsiBuy && i >= cooldownUntil) {
-        let volPass = true;
+    }
 
+    // ── BUY ──────────────────────────────────────────────
+    if (!inPosition && trades.length < maxTrades) {
+      if (rsiRT < rsiBuy && ts >= cooldownUntil && candleOT !== lastBuyCandle) {
         if (volEnabled) {
-          const windowBars = Math.max(1, Math.ceil(volWindowSec / klineSec));
-          const windowStart = Math.max(0, i - windowBars + 1);
-          const windowCandles = candles.slice(windowStart, i + 1);
-
-          let totalBuy = 0, totalSell = 0;
-          for (const c of windowCandles) {
-            totalBuy  += (c.buyVolume  || 0);
-            totalSell += (c.sellVolume || 0);
+          // 检查量能
+          const start = Math.max(0, ci - windowBars + 1);
+          const wc = candles.slice(start, ci + 1);
+          let tb = 0, tsl = 0;
+          for (const c of wc) { tb += (c.buyVolume||0); tsl += (c.sellVolume||0); }
+          const tv = tb + tsl;
+          if (tv > 0 && tv >= volMinTotal && tb >= tsl * volBuyMult) {
+            lastBuyCandle = candleOT;
+            inPosition = true; entryPrice = price; entryTime = ts; volDecayCount = 0;
           }
-
-          const totalVol = totalBuy + totalSell;
-          // 无数据 → 拒绝
-          if (totalVol === 0) { volPass = false; }
-          // 最低成交量门槛
-          else if (totalVol < volMinTotal) { volPass = false; }
-          // 买卖比
-          else if (totalBuy < totalSell * volBuyMult) { volPass = false; }
-        }
-
-        if (volPass) {
-          inPosition = true;
-          entryPrice = price;
-          entryIdx = i;
-          volDecayCount = 0;
+          // 量能不达标：不标记 lastBuyCandle
+        } else {
+          lastBuyCandle = candleOT;
+          inPosition = true; entryPrice = price; entryTime = ts; volDecayCount = 0;
         }
       }
     }
 
-    prevRsi = rsi;
+    prevRsiRT = rsiRT;
   }
 
   // 到期未平仓
-  if (inPosition) {
-    const lastPrice = candles[candles.length - 1].close;
-    const solOut = tradeSizeSol * (lastPrice / entryPrice);
+  if (inPosition && priceTicks.length > 0) {
+    const last = priceTicks[priceTicks.length - 1];
+    const solOut = tradeSizeSol * (last.price / entryPrice);
     trades.push({
-      entryIdx,
-      exitIdx: candles.length - 1,
-      entryPrice,
-      exitPrice: lastPrice,
-      entryTime: candles[entryIdx].openTime,
-      exitTime: candles[candles.length - 1].openTime,
-      holdBars: candles.length - 1 - entryIdx,
-      solIn: tradeSizeSol,
-      solOut,
+      entryPrice, exitPrice: last.price, entryTime, exitTime: last.ts,
+      holdMs: last.ts - entryTime,
+      solIn: tradeSizeSol, solOut,
       pnlSol: solOut - tradeSizeSol,
-      pnlPct: (lastPrice - entryPrice) / entryPrice * 100,
-      exitReason: 'EXPIRED',
+      pnlPct: (last.price - entryPrice) / entryPrice * 100,
+      exitReason: 'EXPIRED', tradeNum: trades.length + 1,
     });
   }
 
-  return {
-    totalCandles: candles.length,
-    trades,
-    params,
-  };
+  return { trades, candleCount: candles.length, tickCount: priceTicks.length };
 }
 
 // ── 汇总统计 ─────────────────────────────────────────────────────
