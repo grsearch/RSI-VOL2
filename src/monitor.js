@@ -51,6 +51,7 @@ class TokenMonitor extends EventEmitter {
     this._started   = false;
     // 止损锁：防止同一 token 并发触发多次止损
     this._stopLossLocks = new Set();
+    this._slPollTimer = null;  // 独立止损轮询
   }
 
   start() {
@@ -65,9 +66,10 @@ class TokenMonitor extends EventEmitter {
     heliusWs.start();
 
     this._scheduleNextPoll();
+    this._startStopLossPoller();  // ★ 500ms 独立止损轮询
     logger.info('[Monitor] 启动 | 轮询=%ds K线=%ds 监控=%d分钟 最大交易=%d次 冷却=%ds DRY_RUN=%s',
       POLL_SEC, KLINE_SEC, MONITOR_MINUTES, MAX_TRADES, SELL_COOLDOWN_SEC, DRY_RUN);
-    logger.info('[Monitor]   BirdeyeWS=%s  HeliusWS=%s',
+    logger.info('[Monitor]   BirdeyeWS=%s  HeliusWS=%s  止损轮询=500ms',
       birdeye.priceStream.isConnected() ? '已连接' : '连接中',
       heliusWs.isConnected() ? '已连接' : '连接中');
   }
@@ -75,6 +77,7 @@ class TokenMonitor extends EventEmitter {
   stop() {
     this._started = false;
     if (this._pollTimer) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+    if (this._slPollTimer) { clearInterval(this._slPollTimer); this._slPollTimer = null; }
     birdeye.priceStream.stop();
     heliusWs.stop();
     dataStore.stopFlush();
@@ -218,12 +221,81 @@ class TokenMonitor extends EventEmitter {
       owner:     trade.owner,
     });
 
+    // ★ 链上交易也触发止损检查（用链上价格 × SOL/USD 估算）
+    // 链上交易比 Birdeye WS 更快到达，不浪费这个信号
+    if (state.inPosition && !state._selling && !this._stopLossLocks.has(address)) {
+      // 用最新的 Birdeye USD 价格做止损判断（链上 priceSol 单位不同，不能直接比）
+      // 但如果有卖出交易且价格大幅下跌，说明市场在抛售
+      const lastUsd = state._lastPriceUsd;
+      if (lastUsd && trade.isBuy === false && trade.solAmount > 0.5) {
+        // 大额卖出交易 → 触发紧急价格刷新
+        this._urgentStopCheck(address, state);
+      }
+    }
+
     logger.debug('[HeliusTrade] %s %s %.4f SOL @ %.10f (%s)',
       state.symbol,
       trade.isBuy ? 'BUY' : 'SELL',
       trade.solAmount,
       trade.priceSol,
       trade.signature?.slice(0, 12) || '?');
+  }
+
+  // ── 紧急止损价格刷新（链上检测到大额卖出时触发）────────────
+  async _urgentStopCheck(address, state) {
+    if (state._selling || this._stopLossLocks.has(address)) return;
+    try {
+      // 绕过缓存直接拉最新价格
+      const price = await birdeye.getPrice(address);
+      if (!price || price <= 0) return;
+      state._lastPriceUsd = price;
+      state._lastPriceTs = Date.now();
+
+      const sl = checkStopLoss(price, state);
+      if (sl.shouldExit) {
+        logger.info('[Monitor] ⚡ 链上大卖触发止损 %s @ %.8f | %s', state.symbol, price, sl.reason);
+        this._stopLossLocks.add(address);
+        this._doSell(state, sl.reason).catch(err => {
+          logger.error('[Monitor] 紧急止损失败 %s: %s', state.symbol, err.message);
+        }).finally(() => {
+          this._stopLossLocks.delete(address);
+        });
+      }
+    } catch (_) {}
+  }
+
+  // ── 独立止损轮询（每 500ms，不依赖 WS 推送） ─────────────────
+
+  _startStopLossPoller() {
+    if (this._slPollTimer) return;
+    this._slPollTimer = setInterval(() => this._stopLossPoll(), 500);
+  }
+
+  async _stopLossPoll() {
+    for (const [address, state] of this._tokens.entries()) {
+      if (!state.inPosition || state._selling || this._stopLossLocks.has(address)) continue;
+
+      try {
+        const price = await birdeye.getPrice(address);
+        if (!price || price <= 0) continue;
+
+        state._lastPriceUsd = price;
+        state._lastPriceTs = Date.now();
+
+        const sl = checkStopLoss(price, state);
+        if (sl.shouldExit) {
+          const holdSec = state.position?.buyTime ? Math.round((Date.now() - state.position.buyTime) / 1000) : 0;
+          logger.info('[Monitor] ⚡ 止损轮询触发 %s @ %.8f | %s | 持仓%ds',
+            state.symbol, price, sl.reason, holdSec);
+          this._stopLossLocks.add(address);
+          this._doSell(state, sl.reason).catch(err => {
+            logger.error('[Monitor] 止损执行失败 %s: %s', state.symbol, err.message);
+          }).finally(() => {
+            this._stopLossLocks.delete(address);
+          });
+        }
+      } catch (_) {}
+    }
   }
 
   // ── 主轮询 ────────────────────────────────────────────────────
