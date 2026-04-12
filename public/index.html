@@ -548,8 +548,8 @@ function renderReports(reports) {
 function loadBtDataInfo() {
   fetch('/api/backtest/data').then(r=>r.json()).then(d=>{
     const el = document.getElementById('bt-data-info');
-    if (el) el.textContent = `${d.tickFiles}个币的数据 | ${d.tradeCount}笔历史交易`;
-    if (d.tickFiles === 0) document.getElementById('bt-empty').style.display = '';
+    if (el) el.textContent = `${d.tickFiles.length}个币的数据 | ${d.tradeCount}笔历史交易`;
+    if (d.tickFiles.length === 0) document.getElementById('bt-empty').style.display = '';
   }).catch(()=>{});
 }
 
