@@ -47,6 +47,7 @@ function runBacktest(ticks, params) {
     tradeSizeSol   = 0.2,
     maxTrades      = 5,
     volBuyMult     = 1.2,
+    volSellMult    = 1.2,
     volMinTotal    = 5,
     sellCooldownSec = 30,
   } = params;
@@ -189,6 +190,18 @@ function runBacktest(ticks, params) {
         const pnl = (price - entryPrice) / entryPrice * 100;
         if (pnl >= takeProfitPct) exitReason = `TAKE_PROFIT(${pnl.toFixed(1)}%)`;
         else if (pnl <= stopLossPct) exitReason = `STOP_LOSS(${pnl.toFixed(1)}%)`;
+      }
+      // 卖压超过买压：sellVol >= volSellMult × buyVol
+      if (!exitReason && volEnabled && candleOT !== lastSellCandle) {
+        const start = Math.max(0, ci - windowBars + 1);
+        const wc = candles.slice(start, ci + 1);
+        let wb = 0, ws = 0;
+        for (const c of wc) { wb += (c.buyVolume||0); ws += (c.sellVolume||0); }
+        if ((wb + ws) > 0 && ws >= wb * volSellMult) {
+          lastSellCandle = candleOT;
+          const m = wb > 0 ? (ws/wb).toFixed(1) : '∞';
+          exitReason = `SELL_PRESSURE(${m}x,${ws.toFixed(1)}/${wb.toFixed(1)})`;
+        }
       }
       // 量能萎缩
       if (!exitReason && volEnabled && ci >= volExitLookback + volExitConsecutive) {

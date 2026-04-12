@@ -22,6 +22,7 @@ const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 // 量能参数
 const VOL_ENABLED         = (process.env.VOL_ENABLED || 'true') === 'true';
 const VOL_BUY_MULT        = parseFloat(process.env.VOL_BUY_MULT          || '1.2');
+const VOL_SELL_MULT       = parseFloat(process.env.VOL_SELL_MULT         || '1.2'); // sellVol >= N × buyVol 触发卖出
 const VOL_MIN_TOTAL       = parseFloat(process.env.VOL_MIN_TOTAL         || '15');  // 最低总成交量(SOL) // buyVol >= N × sellVol 才买入
 const VOL_WINDOW_SEC      = parseInt(process.env.VOL_WINDOW_SEC       || '30', 10);
 const VOL_EXIT_CONSECUTIVE = parseInt(process.env.VOL_EXIT_CONSECUTIVE || '2', 10);
@@ -266,7 +267,16 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
                reason: sl.reason, volume: volumeInfo };
     }
 
-    // 4. 量能萎缩出场
+    // 4. 卖压超过买压：sellVol >= VOL_SELL_MULT × buyVol
+    if (VOL_ENABLED && winTotal > 0 && winSell >= winBuy * VOL_SELL_MULT && lastCandleTs !== lastSellCandle) {
+      const mult = winBuy > 0 ? (winSell / winBuy).toFixed(1) : '∞';
+      tokenState._lastSellCandle = lastCandleTs;
+      updateState();
+      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+               reason: `SELL_PRESSURE(sell=${winSell.toFixed(2)}>=${(winBuy*VOL_SELL_MULT).toFixed(2)},${mult}x,${VOL_WINDOW_SEC}s)`, volume: volumeInfo };
+    }
+
+    // 5. 量能萎缩出场
     const volDecay = checkVolumeDecay(closedCandles, tokenState);
     if (volDecay.shouldExit) {
       updateState();
@@ -418,7 +428,7 @@ module.exports = {
   checkStopLoss,
   CONFIG: {
     RSI_PERIOD, RSI_BUY, RSI_SELL, RSI_PANIC,
-    VOL_ENABLED, VOL_BUY_MULT, VOL_MIN_TOTAL, VOL_WINDOW_SEC,
+    VOL_ENABLED, VOL_BUY_MULT, VOL_SELL_MULT, VOL_MIN_TOTAL, VOL_WINDOW_SEC,
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, KLINE_SEC,

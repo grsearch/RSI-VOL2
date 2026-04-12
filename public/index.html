@@ -148,6 +148,10 @@
         <input type="number" id="bt-volmult" value="1.2" min="1" max="10" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
       </div>
       <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">卖压倍数(卖出) ≥</label>
+        <input type="number" id="bt-volsellmult" value="1.2" min="1" max="10" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
         <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">最低成交量(SOL) ≥</label>
         <input type="number" id="bt-voltotal" value="5" min="0" max="100" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
       </div>
@@ -462,6 +466,8 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-tp">止盈 ${detail}</span>`;
   if (r.startsWith('STOP_LOSS'))
     return `<span class="exit-tag exit-sl">止损 ${detail}</span>`;
+  if (r.startsWith('SELL_PRESSURE'))
+    return `<span class="exit-tag exit-vol">卖压 ${detail}</span>`;
   if (r.startsWith('VOL_DECAY'))
     return `<span class="exit-tag exit-vol">量能萎缩 ${detail}</span>`;
   if (r.includes('FDV_TOO_LOW'))
@@ -571,6 +577,7 @@ function runBacktest() {
     rsiSell:            parseFloat(document.getElementById('bt-rsisell').value),
     rsiPanic:           parseFloat(document.getElementById('bt-rsipanic').value),
     volBuyMult:         parseFloat(document.getElementById('bt-volmult').value),
+    volSellMult:        parseFloat(document.getElementById('bt-volsellmult').value),
     volMinTotal:        parseFloat(document.getElementById('bt-voltotal').value),
     volWindowSec:       parseInt(document.getElementById('bt-volwindow').value),
     stopLossPct:        parseFloat(document.getElementById('bt-stoploss').value),
