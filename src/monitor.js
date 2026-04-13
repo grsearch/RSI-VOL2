@@ -13,11 +13,7 @@
 
 const EventEmitter = require('events');
 const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss,
-<<<<<<< HEAD
-        calcRSIWithState, stepRSI,
-=======
-        stepRSI,
->>>>>>> 2261ddeeeda12af17e9c6d7f8063fc0dbb368426
+        calcRSIWithState,
         TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT } = require('./rsi');
 
 // RSI 卖出阈值（从 CONFIG 取，与 rsi.js 保持一致）
@@ -31,7 +27,7 @@ const wsHub     = require('./wsHub');
 const dataStore = require('./dataStore');
 const heliusWs  = require('./heliusWs');
 
-const MONITOR_MINUTES   = parseInt(process.env.TOKEN_MAX_AGE_MINUTES || '30', 10);
+const MONITOR_MINUTES   = parseInt(process.env.TOKEN_MAX_AGE_MINUTES || '60', 10);
 const FDV_EXIT          = parseFloat(process.env.FDV_EXIT_USD        || '10000');
 const POLL_SEC          = parseInt(process.env.PRICE_POLL_SEC        || '1',  10);
 const KLINE_SEC         = parseInt(process.env.KLINE_INTERVAL_SEC    || '15', 10);
@@ -129,11 +125,8 @@ class TokenMonitor extends EventEmitter {
       _rsiAvgLoss       : NaN,     // 最新已收盘K线的 avgLoss
       _rsiLastClose     : NaN,     // 最新已收盘K线的 close
       _rsiLastCandleTs  : -1,      // 对应的 K 线 openTime（用于检测 K 线是否刷新）
-      _rsiPrevTickRsi   : NaN,     // 上一个 WS tick 的实时 RSI（用于下穿检测）
-<<<<<<< HEAD
-      _slPollPrevRsi    : NaN,     // 止损轮询上一次的 RSI（500ms 间隔下穿检测用）
-=======
->>>>>>> 2261ddeeeda12af17e9c6d7f8063fc0dbb368426
+      _rsiPrevTickRsi   : NaN,     // 保留字段（暂未使用）
+      _slPollPrevRsi    : NaN,     // 保留字段（暂未使用）
       // ★ 多次买卖相关
       _sellCooldownUntil: 0,       // 卖出后冷却到期时间戳
       _selling          : false,   // 正在执行卖出中（防并发）
@@ -217,39 +210,6 @@ class TokenMonitor extends EventEmitter {
         }).finally(() => {
           this._stopLossLocks.delete(address);
         });
-        return;  // 已触发止损，不再检查 RSI
-      }
-
-      // ★ 每个 WS tick 实时 RSI 下穿检测（不依赖 1s 轮询，延迟降至 <150ms）
-      if (Number.isFinite(state._rsiAvgGain) && Number.isFinite(state._rsiLastClose)) {
-        const tickRsi = stepRSI(state._rsiAvgGain, state._rsiAvgLoss, state._rsiLastClose, price);
-        if (Number.isFinite(tickRsi)) {
-          const prevTickRsi = state._rsiPrevTickRsi;
-
-          // RSI > PANIC：用已有的时间防抖逻辑
-          if (tickRsi > _RSI_PANIC) {
-            const lastPanicTs = state._lastPanicSellTs ?? 0;
-            if (Date.now() - lastPanicTs >= 2000 && !state._selling) {
-              state._lastPanicSellTs = Date.now();
-              logger.info('[Monitor] ⚡ WS-RSI恐慌触发 %s @ %.8f | RSI=%.1f>%d',
-                state.symbol, price, tickRsi, _RSI_PANIC);
-              this._doSell(state, `RSI_PANIC(${tickRsi.toFixed(1)}>${_RSI_PANIC})`).catch(err => {
-                logger.error('[Monitor] WS-RSI恐慌卖出失败 %s: %s', state.symbol, err.message);
-              });
-            }
-          }
-          // RSI 下穿 SELL：上一 tick ≥ 70，本 tick < 70
-          else if (Number.isFinite(prevTickRsi) && prevTickRsi >= _RSI_SELL && tickRsi < _RSI_SELL
-                   && !state._selling) {
-            logger.info('[Monitor] ⚡ WS-RSI下穿触发 %s @ %.8f | RSI %.1f→%.1f',
-              state.symbol, price, prevTickRsi, tickRsi);
-            this._doSell(state, `RSI_CROSS_DOWN_70(${prevTickRsi.toFixed(1)}→${tickRsi.toFixed(1)})`).catch(err => {
-              logger.error('[Monitor] WS-RSI下穿卖出失败 %s: %s', state.symbol, err.message);
-            });
-          }
-
-          state._rsiPrevTickRsi = tickRsi;
-        }
       }
     }
   }
@@ -354,20 +314,18 @@ class TokenMonitor extends EventEmitter {
           continue;
         }
 
-        // ── 2. RSI 卖出检查（用完整 ticks 重新计算，确保和图表一致） ──
+        // ── 2. RSI 卖出检查（V1方式：用最近两根已收盘K线比较，简单可靠） ──
         if (state.ticks.length > 0) {
           const { closed: rawCandles } = buildCandles(state.ticks, KLINE_SEC);
           const closedCandles = filterValidCandles(rawCandles);
           if (closedCandles.length >= RSI_CONFIG.RSI_PERIOD + 2) {
             const closes = closedCandles.map(c => c.close);
-            const { avgGain, avgLoss } = calcRSIWithState(closes);
-            const lastClose = closes[closes.length - 1];
-            const rsiNow = stepRSI(avgGain, avgLoss, lastClose, price);
+            const { rsiArray } = calcRSIWithState(closes);
+            const len     = closes.length;
+            const rsiNow  = rsiArray[len - 1];  // 最新已收盘K线
+            const rsiPrev = rsiArray[len - 2];  // 上一根已收盘K线
 
-            if (Number.isFinite(rsiNow)) {
-              const prevRsi = state._slPollPrevRsi;
-              state._slPollPrevRsi = rsiNow;
-
+            if (Number.isFinite(rsiNow) && Number.isFinite(rsiPrev)) {
               // RSI > 80 恐慌卖（2秒防抖）
               if (rsiNow > _RSI_PANIC) {
                 const lastPanicTs = state._lastPanicSellTs ?? 0;
@@ -380,13 +338,17 @@ class TokenMonitor extends EventEmitter {
                   });
                 }
               }
-              // RSI 下穿 70
-              else if (Number.isFinite(prevRsi) && prevRsi >= _RSI_SELL && rsiNow < _RSI_SELL) {
-                logger.info('[Monitor] ⚡ RSI下穿卖出 %s @ %.8f | RSI %.1f→%.1f',
-                  state.symbol, price, prevRsi, rsiNow);
-                this._doSell(state, `RSI_CROSS_DOWN_70(${prevRsi.toFixed(1)}→${rsiNow.toFixed(1)})`).catch(err => {
-                  logger.error('[Monitor] RSI下穿卖出失败 %s: %s', state.symbol, err.message);
-                });
+              // RSI 下穿70：前一根 >= 70，当前根 < 70（与V1完全一致）
+              else if (rsiPrev >= _RSI_SELL && rsiNow < _RSI_SELL) {
+                const candleTs = closedCandles[len - 1].openTime;
+                if (candleTs !== state._lastSellCandle) {
+                  state._lastSellCandle = candleTs;
+                  logger.info('[Monitor] ⚡ RSI下穿卖出 %s @ %.8f | RSI %.1f→%.1f',
+                    state.symbol, price, rsiPrev, rsiNow);
+                  this._doSell(state, `RSI_CROSS_DOWN_70(${rsiPrev.toFixed(1)}→${rsiNow.toFixed(1)})`).catch(err => {
+                    logger.error('[Monitor] RSI下穿卖出失败 %s: %s', state.symbol, err.message);
+                  });
+                }
               }
             }
           }
@@ -677,12 +639,6 @@ class TokenMonitor extends EventEmitter {
     state._lastBuyCandle  = -1;
     state._lastSellCandle = -1;
     state._lastPanicSellTs = 0;
-<<<<<<< HEAD
-    state._rsiPrevTickRsi  = NaN;
-    state._slPollPrevRsi   = NaN;  // ★ 重置轮询RSI，防止旧值误触发下穿
-=======
-    state._rsiPrevTickRsi  = NaN;  // ★ 重置 WS tick RSI，防止旧值误触发下穿
->>>>>>> 2261ddeeeda12af17e9c6d7f8063fc0dbb368426
 
     const remaining = Math.max(0, MAX_TRADES - state.tradeCount);
     const timeLeft  = Math.max(0, Math.ceil((state.expiresAt - Date.now()) / 60000));
