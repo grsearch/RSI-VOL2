@@ -34,6 +34,11 @@ const SKIP_FIRST_CANDLES  = parseInt(process.env.SKIP_FIRST_CANDLES   || '8', 10
 const TAKE_PROFIT_PCT = parseFloat(process.env.TAKE_PROFIT_PCT || '50');
 const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-10');
 
+// 移动止损（Trailing Stop）
+const TRAILING_STOP_ENABLED  = (process.env.TRAILING_STOP_ENABLED  || 'true') === 'true';
+const TRAILING_STOP_ACTIVATE = parseFloat(process.env.TRAILING_STOP_ACTIVATE || '30'); // 上涨 30% 后激活
+const TRAILING_STOP_PCT      = parseFloat(process.env.TRAILING_STOP_PCT      || '-20'); // 峰值回撤 20% 清仓
+
 // ── Wilder RSI 计算 ────────────────────────────────────────────────
 
 function calcRSIWithState(closes, period = RSI_PERIOD) {
@@ -169,9 +174,31 @@ function checkStopLoss(currentPrice, tokenState) {
     return { shouldExit: false, reason: '' };
   }
 
-  const pnl = (currentPrice - tokenState.position.entryPriceUsd)
-            / tokenState.position.entryPriceUsd * 100;
+  const entryPrice = tokenState.position.entryPriceUsd;
+  const pnl = (currentPrice - entryPrice) / entryPrice * 100;
 
+  // ── 移动止损（Trailing Stop）────────────────────────────────────
+  if (TRAILING_STOP_ENABLED && tokenState.position) {
+    // 每个 tick 更新峰值价格
+    if (!tokenState.position._peakPrice || currentPrice > tokenState.position._peakPrice) {
+      tokenState.position._peakPrice = currentPrice;
+    }
+    const peakPrice = tokenState.position._peakPrice;
+    const peakPnl   = (peakPrice - entryPrice) / entryPrice * 100;
+
+    // 上涨达到激活线后，从峰值回撤超过阈值则清仓
+    if (peakPnl >= TRAILING_STOP_ACTIVATE) {
+      const dropFromPeak = (currentPrice - peakPrice) / peakPrice * 100;
+      if (dropFromPeak <= TRAILING_STOP_PCT) {
+        return {
+          shouldExit: true,
+          reason: `TRAILING_STOP(峰值+${peakPnl.toFixed(1)}%,回撤${dropFromPeak.toFixed(1)}%≤${TRAILING_STOP_PCT}%)`
+        };
+      }
+    }
+  }
+
+  // ── 固定止盈 / 固定止损 ───────────────────────────────────────
   if (pnl >= TAKE_PROFIT_PCT) {
     return { shouldExit: true, reason: `TAKE_PROFIT(+${pnl.toFixed(1)}%≥${TAKE_PROFIT_PCT}%)` };
   }
@@ -437,5 +464,6 @@ module.exports = {
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, KLINE_SEC,
+    TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT,
   },
 };

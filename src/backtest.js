@@ -44,6 +44,9 @@ function runBacktest(ticks, params) {
     skipFirstCandles = 8,
     takeProfitPct  = 99999,
     stopLossPct    = -10,
+    trailingStopEnabled  = true,
+    trailingStopActivate = 30,   // 上涨 30% 后激活
+    trailingStopPct      = -20,  // 峰值回撤 20% 清仓
     tradeSizeSol   = 0.2,
     maxTrades      = 5,
     volBuyMult     = 1.2,
@@ -142,7 +145,7 @@ function runBacktest(ticks, params) {
   // ── 逐 tick 模拟（与 live evaluateSignal 完全一致） ────────
   const trades = [];
   let inPosition = false;
-  let entryPrice = 0, entryTime = 0;
+  let entryPrice = 0, entryTime = 0, peakPrice = 0;
   let prevRsiRT  = NaN;
   let lastBuyCandle = -1, lastSellCandle = -1;
   let cooldownUntil = 0;
@@ -173,6 +176,9 @@ function runBacktest(ticks, params) {
 
     // ── SELL ──────────────────────────────────────────────
     if (inPosition) {
+      // 每 tick 更新峰值
+      if (price > peakPrice) peakPrice = price;
+
       let exitReason = null;
 
       // RSI > panic
@@ -185,7 +191,15 @@ function runBacktest(ticks, params) {
         lastSellCandle = candleOT;
         exitReason = `RSI_CROSS_DOWN(${prevRsi.toFixed(1)}→${rsiRT.toFixed(1)})`;
       }
-      // 止盈/止损（逐 tick）
+      // 移动止损（每 tick 检查，不受 lastSellCandle 限制）
+      if (!exitReason && trailingStopEnabled) {
+        const peakPnl      = (peakPrice - entryPrice) / entryPrice * 100;
+        const dropFromPeak = (price - peakPrice) / peakPrice * 100;
+        if (peakPnl >= trailingStopActivate && dropFromPeak <= trailingStopPct) {
+          exitReason = `TRAILING_STOP(峰值+${peakPnl.toFixed(1)}%,回撤${dropFromPeak.toFixed(1)}%)`;
+        }
+      }
+      // 固定止盈/止损（逐 tick）
       if (!exitReason) {
         const pnl = (price - entryPrice) / entryPrice * 100;
         if (pnl >= takeProfitPct) exitReason = `TAKE_PROFIT(${pnl.toFixed(1)}%)`;
@@ -228,6 +242,7 @@ function runBacktest(ticks, params) {
           exitReason, tradeNum: trades.length + 1,
         });
         inPosition = false;
+        peakPrice = 0;
         volDecayCount = 0;
         cooldownUntil = ts + sellCooldownSec * 1000;
         lastBuyCandle = lastSellCandle = -1;
@@ -247,12 +262,12 @@ function runBacktest(ticks, params) {
           const tv = tb + tsl;
           if (tv > 0 && tv >= volMinTotal && tb >= tsl * volBuyMult) {
             lastBuyCandle = candleOT;
-            inPosition = true; entryPrice = price; entryTime = ts; volDecayCount = 0;
+            inPosition = true; entryPrice = price; peakPrice = price; entryTime = ts; volDecayCount = 0;
           }
           // 量能不达标：不标记 lastBuyCandle
         } else {
           lastBuyCandle = candleOT;
-          inPosition = true; entryPrice = price; entryTime = ts; volDecayCount = 0;
+          inPosition = true; entryPrice = price; peakPrice = price; entryTime = ts; volDecayCount = 0;
         }
       }
     }
@@ -476,6 +491,9 @@ function main() {
     skipFirstCandles:   parseInt(args['skip-first']       || process.env.SKIP_FIRST_CANDLES || '8', 10),
     takeProfitPct:      parseFloat(args['take-profit']    || process.env.TAKE_PROFIT_PCT || '50'),
     stopLossPct:        parseFloat(args['stop-loss']      || process.env.STOP_LOSS_PCT || '-10'),
+    trailingStopEnabled:  (args['trailing-stop'] || process.env.TRAILING_STOP_ENABLED || 'true') === 'true',
+    trailingStopActivate: parseFloat(args['trailing-activate'] || process.env.TRAILING_STOP_ACTIVATE || '30'),
+    trailingStopPct:      parseFloat(args['trailing-pct']      || process.env.TRAILING_STOP_PCT      || '-20'),
     tradeSizeSol:       parseFloat(args['trade-size']     || process.env.TRADE_SIZE_SOL || '0.2'),
     maxTrades:          parseInt(args['max-trades']       || process.env.MAX_TRADES_PER_TOKEN || '5', 10),
   };
@@ -487,6 +505,8 @@ function main() {
     params.volEnabled, params.volMult, params.volLookback, (params.volBuyRatio * 100).toFixed(0));
   console.log('   出场: volDecay=%d根连续 ratio<%sx  TP=%+d%% SL=%d%%',
     params.volExitConsecutive, params.volExitRatio, params.takeProfitPct, params.stopLossPct);
+  console.log('   移动止损: %s  激活=+%d%%  回撤=%d%%',
+    params.trailingStopEnabled ? '开启' : '关闭', params.trailingStopActivate, params.trailingStopPct);
   console.log('   跳过前 %d 根K线  最大交易 %d 次/token\n', params.skipFirstCandles, params.maxTrades);
 
   // 筛选 token

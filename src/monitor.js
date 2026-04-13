@@ -12,7 +12,8 @@
 //   addToken → [BUY → SELL → 冷却 → BUY → SELL → ...] → EXPIRED/MAX_TRADES → removeToken
 
 const EventEmitter = require('events');
-const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss } = require('./rsi');
+const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss,
+        TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT } = require('./rsi');
 const trader    = require('./trader');
 const birdeye   = require('./birdeye');
 const logger    = require('./logger');
@@ -72,6 +73,8 @@ class TokenMonitor extends EventEmitter {
     logger.info('[Monitor]   BirdeyeWS=%s  HeliusWS=%s  止损轮询=500ms',
       birdeye.priceStream.isConnected() ? '已连接' : '连接中',
       heliusWs.isConnected() ? '已连接' : '连接中');
+    logger.info('[Monitor]   移动止损=%s  激活线=+%s%%  回撤线=%s%%',
+      TRAILING_STOP_ENABLED ? '开启' : '关闭', TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT);
   }
 
   stop() {
@@ -463,7 +466,7 @@ class TokenMonitor extends EventEmitter {
         buyTxid       : `DRY_${Date.now()}`,
         buyTime       : Date.now(),
         buyReason     : reason,
-        _peakPrice    : price,   // ★ 移动止损：初始峰值 = 买入价
+        _peakPrice    : price,  // ★ 移动止损：初始峰值 = 买入价
       };
       state.tradeCount++;
       this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason,
