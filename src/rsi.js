@@ -19,6 +19,14 @@ const RSI_SELL     = parseFloat(process.env.RSI_SELL_LEVEL  || '70');
 const RSI_PANIC    = parseFloat(process.env.RSI_PANIC_LEVEL || '80');
 const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 
+// ★ RSI 峰值回落卖出（RSI Peak Drop）
+//   持仓后追踪 RSI 最高点，当 RSI 从峰值回落超过阈值时卖出
+//   解决 RSI 没到 70 就开始回落的场景
+const RSI_PEAK_DROP_ENABLED  = (process.env.RSI_PEAK_DROP_ENABLED  || 'true') === 'true';
+const RSI_PEAK_DROP_ACTIVATE = parseFloat(process.env.RSI_PEAK_DROP_ACTIVATE || '55');  // RSI 峰值须 ≥ 此值才激活
+const RSI_PEAK_DROP_DELTA    = parseFloat(process.env.RSI_PEAK_DROP_DELTA    || '10');  // 从峰值回落 ≥ 此值触发卖出
+const RSI_PEAK_DROP_FLOOR    = parseFloat(process.env.RSI_PEAK_DROP_FLOOR    || '50');  // 回落后 RSI 须 ≤ 此值才卖（防止高位微抖）
+
 // 量能参数
 const VOL_ENABLED         = (process.env.VOL_ENABLED || 'true') === 'true';
 const VOL_BUY_MULT        = parseFloat(process.env.VOL_BUY_MULT          || '1.2');
@@ -209,6 +217,43 @@ function checkStopLoss(currentPrice, tokenState) {
   return { shouldExit: false, reason: '', pnl };
 }
 
+// ── RSI 峰值回落检测 ─────────────────────────────────────────────
+//
+//  持仓后持续追踪 RSI 的最高值（_rsiPeakSinceEntry），
+//  当 RSI 从峰值回落超过 RSI_PEAK_DROP_DELTA 且当前 RSI ≤ RSI_PEAK_DROP_FLOOR 时卖出。
+//
+//  例：RSI 峰值 = 65，回落到 52 → delta = 13 > 10 且 52 ≤ 50？不满足 floor
+//       RSI 峰值 = 65，回落到 48 → delta = 17 > 10 且 48 ≤ 50 → 卖出 ✓
+//       RSI 峰值 = 45，回落到 30 → 峰值 45 < 55(activate) → 不激活
+//
+function checkRsiPeakDrop(rsiRealtime, tokenState) {
+  if (!RSI_PEAK_DROP_ENABLED) return { shouldExit: false, reason: '' };
+  if (!tokenState.inPosition) return { shouldExit: false, reason: '' };
+
+  // 更新 RSI 峰值
+  if (!Number.isFinite(tokenState._rsiPeakSinceEntry) || rsiRealtime > tokenState._rsiPeakSinceEntry) {
+    tokenState._rsiPeakSinceEntry = rsiRealtime;
+  }
+
+  const peak = tokenState._rsiPeakSinceEntry;
+  if (!Number.isFinite(peak)) return { shouldExit: false, reason: '' };
+
+  // 峰值太低，没形成有效上涨动能，不激活
+  if (peak < RSI_PEAK_DROP_ACTIVATE) return { shouldExit: false, reason: '' };
+
+  const drop = peak - rsiRealtime;
+
+  // 从峰值回落超过阈值，且当前 RSI 已跌到 floor 以下
+  if (drop >= RSI_PEAK_DROP_DELTA && rsiRealtime <= RSI_PEAK_DROP_FLOOR) {
+    return {
+      shouldExit: true,
+      reason: `RSI_PEAK_DROP(peak=${peak.toFixed(1)},now=${rsiRealtime.toFixed(1)},drop=${drop.toFixed(1)}≥${RSI_PEAK_DROP_DELTA})`,
+    };
+  }
+
+  return { shouldExit: false, reason: '' };
+}
+
 // ── 主信号函数 ─────────────────────────────────────────────────────
 
 function evaluateSignal(closedCandles, realtimePrice, tokenState) {
@@ -280,6 +325,9 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   // ── SELL 优先（持仓中） ────────────────────────────────────────
   if (tokenState.inPosition) {
 
+    // ★ 持续更新 RSI 峰值（每次 evaluateSignal 都更新）
+    checkRsiPeakDrop(rsiRealtime, tokenState);  // 内部会更新 _rsiPeakSinceEntry
+
     // 1. RSI > 80 恐慌卖
     //    ★ 不受 lastSellCandle 限制（修复：K线防抖会导致同K线内卖出失败后无法重试）
     //    ★ 改用 2 秒时间防抖，避免每个 tick 都重复触发日志，但保证卖出失败后能重试
@@ -299,6 +347,14 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
       updateState();
       return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
                reason: `RSI_CROSS_DOWN_70(${prevRsi.toFixed(1)}→${rsiRealtime.toFixed(1)})`, volume: volumeInfo };
+    }
+
+    // 2.5 ★ RSI 峰值回落卖出（RSI 没到 70 也能卖）
+    const peakDrop = checkRsiPeakDrop(rsiRealtime, tokenState);
+    if (peakDrop.shouldExit) {
+      updateState();
+      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+               reason: peakDrop.reason, volume: volumeInfo };
     }
 
     // 3. 止盈 / 止损（也在 evaluateSignal 中保留，双重保险）
@@ -467,8 +523,10 @@ module.exports = {
   checkBuyVolume,
   checkVolumeDecay,
   checkStopLoss,
+  checkRsiPeakDrop,
   CONFIG: {
     RSI_PERIOD, RSI_BUY, RSI_SELL, RSI_PANIC,
+    RSI_PEAK_DROP_ENABLED, RSI_PEAK_DROP_ACTIVATE, RSI_PEAK_DROP_DELTA, RSI_PEAK_DROP_FLOOR,
     VOL_ENABLED, VOL_BUY_MULT, VOL_SELL_MULT, VOL_MIN_TOTAL, VOL_WINDOW_SEC,
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
