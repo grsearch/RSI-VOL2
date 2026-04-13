@@ -53,7 +53,7 @@ app.get('/api/birdeye-status', (_req, res) => {
 });
 
 // ── 回测 API ──────────────────────────────────────────────────────
-const { runBacktest: btRun } = require('./backtest');
+const { runBacktest: btRun, gridSearchFromTicks } = require('./backtest');
 
 app.post('/api/backtest/run', (req, res) => {
   try {
@@ -96,6 +96,40 @@ app.post('/api/backtest/run', (req, res) => {
     };
 
     res.json({ results, summary, params });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backtest/grid', (req, res) => {
+  try {
+    const files = dataStore.listTickFiles();
+    if (files.length === 0) {
+      return res.json({ error: '无 tick 数据', results: [] });
+    }
+
+    // 加载所有 tick 数据
+    const allTicks = [];
+    for (const f of files) {
+      try {
+        const ticks = dataStore.loadTicks(f.address);
+        if (ticks && ticks.length >= 10) {
+          allTicks.push({ address: f.address, ticks });
+        }
+      } catch (_) {}
+    }
+
+    if (allTicks.length === 0) {
+      return res.json({ error: '无有效 tick 数据', results: [] });
+    }
+
+    const results = gridSearchFromTicks(allTicks);
+    if (!results || results.length === 0) {
+      return res.json({ error: '网格搜索无结果', results: [] });
+    }
+
+    // 返回 top 20 结果
+    res.json({ results: results.slice(0, 20), total: results.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

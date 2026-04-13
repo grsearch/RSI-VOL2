@@ -340,6 +340,16 @@ function countBy(arr, fn) {
 // ── 网格搜索 ─────────────────────────────────────────────────────
 
 function gridSearch(tickFiles) {
+  // 加载所有 tick 数据
+  const allTicks = tickFiles.map(f => {
+    try {
+      return { address: f.address, ticks: JSON.parse(fs.readFileSync(f.file, 'utf-8')) };
+    } catch (_) { return null; }
+  }).filter(Boolean);
+  return gridSearchFromTicks(allTicks);
+}
+
+function gridSearchFromTicks(allTicks) {
   // 基于当前最优参数（RSI35, SL-20, 移动止损30/-20）附近做精细搜索
   const paramGrid = {
     rsiBuy:              [25, 30, 35, 40],
@@ -349,15 +359,6 @@ function gridSearch(tickFiles) {
     trailingPct:         [-15, -20, -25],
     skipFirstCandles:    [4, 8, 12],
   };
-
-  // 加载所有 tick 数据
-  const allTicks = tickFiles.map(f => {
-    try {
-      return { address: f.address, ticks: JSON.parse(fs.readFileSync(f.file, 'utf-8')) };
-    } catch (_) {
-      return null;
-    }
-  }).filter(Boolean);
 
   if (allTicks.length === 0) {
     console.log('❌ 没有可用的 tick 数据');
@@ -634,7 +635,7 @@ function main() {
 }
 
 // 导出供 API 使用
-module.exports = { runBacktest };
+module.exports = { runBacktest, gridSearch, gridSearchFromTicks };
 
 // 只在直接运行时执行 main
 if (require.main === module) {
