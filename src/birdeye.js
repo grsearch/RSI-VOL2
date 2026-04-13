@@ -14,7 +14,7 @@ const logger    = require('./logger');
 
 const BIRDEYE_KEY  = process.env.BIRDEYE_API_KEY || '';
 const BASE         = 'https://public-api.birdeye.so';
-const FDV_CACHE_MS = 30 * 1000;
+const FDV_CACHE_MS = 5 * 1000;  // FDV 缓存 5 秒（快速响应 FDV 下跌）
 
 // ── WebSocket 价格流 ──────────────────────────────────────────────
 

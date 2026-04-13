@@ -112,6 +112,97 @@
       </tr></thead>
       <tbody></tbody>
     </table>
+    <div id="records-pager" style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:10px;font-size:12px">
+      <button onclick="recordsPagePrev()" id="rec-prev" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;padding:4px 12px;border-radius:4px;cursor:pointer">← 上一页</button>
+      <span id="rec-page-info" style="color:#8b949e">1/1</span>
+      <button onclick="recordsPageNext()" id="rec-next" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;padding:4px 12px;border-radius:4px;cursor:pointer">下一页 →</button>
+    </div>
+  </div>
+
+  <!-- 回测面板 -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>策略回测 <span style="font-size:11px;color:#8b949e;margin-left:8px" id="bt-data-info"></span></h2>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px">
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">K线(秒)</label>
+        <input type="number" id="bt-kline" value="3" min="1" max="60" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 周期</label>
+        <input type="number" id="bt-rsiperiod" value="4" min="2" max="30" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 买入 &lt;</label>
+        <input type="number" id="bt-rsibuy" value="35" min="5" max="50" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 卖出 &gt;</label>
+        <input type="number" id="bt-rsisell" value="70" min="50" max="95" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">RSI 恐慌 &gt;</label>
+        <input type="number" id="bt-rsipanic" value="80" min="60" max="99" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Buy/Sell 倍数 ≥</label>
+        <input type="number" id="bt-volmult" value="1.2" min="1" max="10" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">卖压倍数(卖出) ≥</label>
+        <input type="number" id="bt-volsellmult" value="1.2" min="1" max="10" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">最低成交量(SOL) ≥</label>
+        <input type="number" id="bt-voltotal" value="5" min="0" max="100" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">量能窗口(秒)</label>
+        <input type="number" id="bt-volwindow" value="15" min="5" max="120" step="5" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止损 %</label>
+        <input type="number" id="bt-stoploss" value="-10" min="-50" max="0" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止盈 %</label>
+        <input type="number" id="bt-takeprofit" value="99999" min="10" max="99999" step="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">跳过前N根K线</label>
+        <input type="number" id="bt-skip" value="8" min="0" max="30" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">萎缩阈值 &lt;</label>
+        <input type="number" id="bt-decayratio" value="0.3" min="0.1" max="1.0" step="0.1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">萎缩连续根数</label>
+        <input type="number" id="bt-decaycons" value="3" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">最大交易次数</label>
+        <input type="number" id="bt-maxtrades" value="5" min="1" max="20" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">卖出冷却(秒)</label>
+        <input type="number" id="bt-cooldown" value="30" min="0" max="300" step="5" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button onclick="runBacktest()" id="bt-run-btn" style="width:100%;background:#1a4731;border:1px solid #3fb950;color:#3fb950;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold">▶ 运行回测</button>
+      </div>
+    </div>
+    <!-- 回测结果 -->
+    <div id="bt-results" style="display:none">
+      <div id="bt-summary" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px"></div>
+      <div style="max-height:300px;overflow-y:auto">
+        <table id="bt-trades" style="width:100%">
+          <thead><tr><th>代币</th><th>入场价</th><th>出场价</th><th>持仓K线</th><th>PnL(SOL)</th><th>PnL%</th><th>退出原因</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="bt-loading" style="display:none;text-align:center;padding:20px;color:#8b949e">⏳ 回测中...</div>
+    <div id="bt-empty" style="display:none;text-align:center;padding:20px;color:#8b949e">暂无 tick 数据，请先运行监控收集数据</div>
   </div>
 
   <!-- 报告 -->
@@ -124,6 +215,11 @@
 <script>
 const rows   = {};
 const logMax = 100;
+
+// ── 成交记录分页 ──
+const REC_PAGE_SIZE = 30;
+let _allRecords = [];
+let _recPage = 0;
 
 function fmt(n, d=6){ return n==null?'-':Number(n).toFixed(d) }
 function fmtTime(ts){ return ts ? new Date(ts).toLocaleTimeString() : '-' }
@@ -142,32 +238,8 @@ function connect(){
   ws.onopen = () => {
     document.getElementById('ws-status').textContent = '✅ 已连接';
     document.getElementById('ws-status').className = 'badge green';
-
-    fetch('/api/dashboard').then(r=>r.json()).then(d=>{
-      (d.tokens||[]).forEach(t => updateTokenRow(t));
-      document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
-      const modeBadge = document.getElementById('mode-badge');
-      if (d.dryRun) {
-        modeBadge.textContent = '🔵 空跑模式';
-        modeBadge.className = 'badge blue';
-      } else {
-        modeBadge.textContent = '🔴 实盘模式';
-        modeBadge.className = 'badge red';
-      }
-    });
-    fetch('/api/trades').then(r=>r.json()).then(logs => {
-      logs.slice(0,50).reverse().forEach(addLogRow);
-    });
-    fetch('/api/trade-records').then(r=>r.json()).then(records=>{
-      records.slice(0,50).forEach(addRecordRow);
-      updatePnlSummary(records);
-      updateStats(records);
-    });
-    fetch('/api/reports').then(r=>r.json()).then(renderReports);
-    fetch('/api/data-stats').then(r=>r.json()).then(d=>{
-      document.getElementById('data-stats').textContent =
-        `数据: ${d.tickFiles}币 ${d.tradeCount}笔 ${d.signalCount}信号`;
-    });
+    // 每次连接（含重连）都刷新全量数据
+    refreshAll();
   };
 
   ws.onclose = () => {
@@ -181,15 +253,64 @@ function connect(){
     if (d.type === 'tick')         handleTick(d);
     if (d.type === 'trade_log')    addLogRow(d);
     if (d.type === 'trade_record') {
-      addRecordRow(d);
-      fetch('/api/trade-records').then(r=>r.json()).then(records => {
-        updatePnlSummary(records);
-        updateStats(records);
-      });
+      // 更新或插入记录
+      const idx = _allRecords.findIndex(r => r.id === d.id);
+      if (idx >= 0) { _allRecords[idx] = d; } else { _allRecords.unshift(d); }
+      renderRecordsPage();
+      updatePnlSummary(_allRecords);
+      updateStats(_allRecords);
     }
     if (d.type === 'token_list')   handleTokenList(d.tokens);
   };
 }
+
+// ── 全量刷新 ──
+function refreshAll() {
+  fetch('/api/dashboard').then(r=>r.json()).then(d=>{
+    (d.tokens||[]).forEach(t => updateTokenRow(t));
+    document.getElementById('token-count').textContent = (d.tokens||[]).length + ' 代币';
+    const modeBadge = document.getElementById('mode-badge');
+    if (d.dryRun) {
+      modeBadge.textContent = '🔵 空跑模式';
+      modeBadge.className = 'badge blue';
+    } else {
+      modeBadge.textContent = '🔴 实盘模式';
+      modeBadge.className = 'badge red';
+    }
+  }).catch(()=>{});
+
+  refreshLogs();
+  refreshRecords();
+
+  fetch('/api/reports').then(r=>r.json()).then(renderReports).catch(()=>{});
+  fetch('/api/data-stats').then(r=>r.json()).then(d=>{
+    document.getElementById('data-stats').textContent =
+      `数据: ${d.tickFiles}币 ${d.tradeCount}笔 ${d.signalCount}信号`;
+  }).catch(()=>{});
+}
+
+function refreshLogs() {
+  fetch('/api/trades').then(r=>r.json()).then(logs => {
+    const tbody = document.querySelector('#tbl-log tbody');
+    tbody.innerHTML = '';
+    logs.slice(0, logMax).reverse().forEach(addLogRow);
+  }).catch(()=>{});
+}
+
+function refreshRecords() {
+  fetch('/api/trade-records').then(r=>r.json()).then(records=>{
+    // 按买入时间倒序（最新的在前）
+    records.sort((a, b) => (b.buyAt || 0) - (a.buyAt || 0));
+    _allRecords = records;
+    renderRecordsPage();
+    updatePnlSummary(records);
+    updateStats(records);
+  }).catch(()=>{});
+}
+
+// ── 定时自动刷新（兜底，防止 WS 推送遗漏） ──
+setInterval(refreshRecords, 15000);   // 成交记录 15秒刷新
+setInterval(refreshLogs, 30000);      // 交易日志 30秒刷新
 
 function handleTick(d){
   const tbody = document.querySelector('#tbl-tokens tbody');
@@ -260,14 +381,15 @@ function addLogRow(d){
 
 function fmtBuyReason(reason) {
   if (!reason) return '-';
-  // 提取 RSI 值和量能信息用友好格式显示
-  // 例如: RSI_OVERSOLD(25.3≤30)+BUY>SELL(1.20>0.80,60%,30s)
+  // RSI_OVERSOLD(28.5<35)+BUY≥2.0xSELL(1.44>=0.72,2.0x,67%,30s)
   const rsiMatch = reason.match(/RSI_OVERSOLD\(([^)]+)\)/);
-  const volMatch = reason.match(/BUY>SELL\(([^)]+)\)/);
+  const volMatch = reason.match(/BUY≥[\d.]+xSELL\(([^)]+)\)/);
+  const crossMatch = reason.match(/RSI_CROSS_UP_30\(([^)]+)\)/);
   const noDataMatch = reason.includes('VOL_NO_DIRECTION_DATA');
 
   let parts = [];
-  if (rsiMatch) parts.push(`RSI=${rsiMatch[1].split('≤')[0]}`);
+  if (rsiMatch) parts.push(`RSI:${rsiMatch[1].split('<')[0]}`);
+  if (crossMatch) parts.push(`RSI:${crossMatch[1]}`);
   if (volMatch) {
     const volParts = volMatch[1].split(',');
     if (volParts.length >= 2) {
@@ -281,11 +403,10 @@ function fmtBuyReason(reason) {
   if (parts.length > 0) {
     return `<span class="buy-reason" title="${reason}">${parts.join(' ')}</span>`;
   }
-  return `<span class="buy-reason" title="${reason}">${reason.slice(0,40)}</span>`;
+  return `<span class="buy-reason" title="${reason}">${reason.slice(0,50)}</span>`;
 }
 
-function addRecordRow(d){
-  const tbody = document.querySelector('#tbl-records tbody');
+function renderRecordRow(d){
   const tr = document.createElement('tr');
   const p = d.pnlPct;
   const pnlSolStr = d.pnlSol != null
@@ -304,8 +425,32 @@ function addRecordRow(d){
     <td>${fmtExitReason(d.exitReason)}</td>
     <td style="color:#8b949e;font-size:11px">${fmtDate(d.buyAt)}</td>
   `;
-  tbody.prepend(tr);
-  while(tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
+  return tr;
+}
+
+function renderRecordsPage(){
+  const tbody = document.querySelector('#tbl-records tbody');
+  tbody.innerHTML = '';
+  const total = _allRecords.length;
+  const totalPages = Math.max(1, Math.ceil(total / REC_PAGE_SIZE));
+  if (_recPage >= totalPages) _recPage = totalPages - 1;
+  if (_recPage < 0) _recPage = 0;
+  const start = _recPage * REC_PAGE_SIZE;
+  const page = _allRecords.slice(start, start + REC_PAGE_SIZE);
+  page.forEach(d => tbody.appendChild(renderRecordRow(d)));
+
+  // 更新分页控件
+  document.getElementById('rec-page-info').textContent = `${_recPage+1}/${totalPages}  (共${total}条)`;
+  document.getElementById('rec-prev').disabled = _recPage <= 0;
+  document.getElementById('rec-next').disabled = _recPage >= totalPages - 1;
+  document.getElementById('rec-prev').style.opacity = _recPage <= 0 ? '0.4' : '1';
+  document.getElementById('rec-next').style.opacity = _recPage >= totalPages - 1 ? '0.4' : '1';
+}
+
+function recordsPagePrev(){ if(_recPage>0){_recPage--;renderRecordsPage()} }
+function recordsPageNext(){
+  const totalPages = Math.max(1, Math.ceil(_allRecords.length / REC_PAGE_SIZE));
+  if(_recPage<totalPages-1){_recPage++;renderRecordsPage()}
 }
 
 function fmtExitReason(reason) {
@@ -321,6 +466,8 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-tp">止盈 ${detail}</span>`;
   if (r.startsWith('STOP_LOSS'))
     return `<span class="exit-tag exit-sl">止损 ${detail}</span>`;
+  if (r.startsWith('SELL_PRESSURE'))
+    return `<span class="exit-tag exit-vol">卖压 ${detail}</span>`;
   if (r.startsWith('VOL_DECAY'))
     return `<span class="exit-tag exit-vol">量能萎缩 ${detail}</span>`;
   if (r.includes('FDV_TOO_LOW'))
@@ -406,7 +553,104 @@ function renderReports(reports) {
   ).join('');
 }
 
+// ── 回测 ──────────────────────────────────────────────────────
+
+function loadBtDataInfo() {
+  fetch('/api/backtest/data').then(r=>r.json()).then(d=>{
+    const el = document.getElementById('bt-data-info');
+    if (el) el.textContent = `${d.tickFiles.length}个币的数据 | ${d.tradeCount}笔历史交易`;
+    if (d.tickFiles.length === 0) document.getElementById('bt-empty').style.display = '';
+  }).catch(()=>{});
+}
+
+function runBacktest() {
+  const btn = document.getElementById('bt-run-btn');
+  btn.disabled = true; btn.textContent = '⏳ 回测中...';
+  document.getElementById('bt-loading').style.display = '';
+  document.getElementById('bt-results').style.display = 'none';
+  document.getElementById('bt-empty').style.display = 'none';
+
+  const params = {
+    klineSec:           parseInt(document.getElementById('bt-kline').value),
+    rsiPeriod:          parseInt(document.getElementById('bt-rsiperiod').value),
+    rsiBuy:             parseFloat(document.getElementById('bt-rsibuy').value),
+    rsiSell:            parseFloat(document.getElementById('bt-rsisell').value),
+    rsiPanic:           parseFloat(document.getElementById('bt-rsipanic').value),
+    volBuyMult:         parseFloat(document.getElementById('bt-volmult').value),
+    volSellMult:        parseFloat(document.getElementById('bt-volsellmult').value),
+    volMinTotal:        parseFloat(document.getElementById('bt-voltotal').value),
+    volWindowSec:       parseInt(document.getElementById('bt-volwindow').value),
+    stopLossPct:        parseFloat(document.getElementById('bt-stoploss').value),
+    takeProfitPct:      parseFloat(document.getElementById('bt-takeprofit').value),
+    skipFirstCandles:   parseInt(document.getElementById('bt-skip').value),
+    volExitRatio:       parseFloat(document.getElementById('bt-decayratio').value),
+    volExitConsecutive: parseInt(document.getElementById('bt-decaycons').value),
+    maxTrades:          parseInt(document.getElementById('bt-maxtrades').value),
+    sellCooldownSec:    parseInt(document.getElementById('bt-cooldown').value),
+    volEnabled:         true,
+    tradeSizeSol:       0.2,
+  };
+
+  fetch('/api/backtest/run', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(params),
+  }).then(r=>r.json()).then(data => {
+    btn.disabled = false; btn.textContent = '▶ 运行回测';
+    document.getElementById('bt-loading').style.display = 'none';
+
+    if (data.error || !data.summary || data.summary.totalTrades === 0) {
+      document.getElementById('bt-empty').style.display = '';
+      document.getElementById('bt-empty').textContent = data.error || '此参数组合无交易产生';
+      return;
+    }
+
+    document.getElementById('bt-results').style.display = '';
+    const s = data.summary;
+
+    // 汇总卡片
+    const sumEl = document.getElementById('bt-summary');
+    const pnlClass = s.totalPnlSol > 0 ? 'profit' : s.totalPnlSol < 0 ? 'loss' : 'neutral';
+    const wrClass = s.winRate >= 50 ? 'profit' : 'loss';
+    sumEl.innerHTML = `
+      <div class="stat-box neutral"><div class="val">${s.totalTrades}</div><div class="lbl">总交易</div></div>
+      <div class="stat-box ${wrClass}"><div class="val">${s.winRate.toFixed(1)}%</div><div class="lbl">胜率</div></div>
+      <div class="stat-box profit"><div class="val">${s.wins}</div><div class="lbl">盈利</div></div>
+      <div class="stat-box loss"><div class="val">${s.losses}</div><div class="lbl">亏损</div></div>
+      <div class="stat-box ${pnlClass}"><div class="val">${s.totalPnlSol>=0?'+':''}${s.totalPnlSol.toFixed(4)}</div><div class="lbl">总PnL(SOL)</div></div>
+      <div class="stat-box ${s.avgPnlPct>=0?'profit':'loss'}"><div class="val">${s.avgPnlPct>=0?'+':''}${s.avgPnlPct.toFixed(2)}%</div><div class="lbl">平均PnL%</div></div>
+      <div class="stat-box profit"><div class="val">+${s.avgWinPct.toFixed(2)}%</div><div class="lbl">平均赢利</div></div>
+      <div class="stat-box loss"><div class="val">${s.avgLossPct.toFixed(2)}%</div><div class="lbl">平均亏损</div></div>
+    `;
+
+    // 交易明细
+    const tbody = document.querySelector('#bt-trades tbody');
+    tbody.innerHTML = '';
+    const allTrades = data.results.flatMap(r => r.trades.map(t => ({...t, address: r.address})));
+    allTrades.sort((a,b) => (b.pnlPct) - (a.pnlPct));
+    for (const t of allTrades) {
+      const tr = document.createElement('tr');
+      const icon = t.pnlSol > 0 ? '🟢' : t.pnlSol < 0 ? '🔴' : '⚪';
+      tr.innerHTML = `
+        <td>${icon} <a href="https://gmgn.ai/sol/token/${t.address||''}" target="_blank" class="gmgn">${(t.address||'').slice(0,6)}...</a></td>
+        <td>${t.entryPrice?.toFixed(8) || '-'}</td>
+        <td>${t.exitPrice?.toFixed(8) || '-'}</td>
+        <td>${t.holdBars}</td>
+        <td class="${t.pnlSol>=0?'buy':'sell'}">${t.pnlSol>=0?'+':''}${t.pnlSol.toFixed(4)}</td>
+        <td class="${t.pnlPct>=0?'buy':'sell'}">${t.pnlPct>=0?'+':''}${t.pnlPct.toFixed(2)}%</td>
+        <td style="font-size:11px;color:#8b949e">${t.exitReason||'-'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }).catch(err => {
+    btn.disabled = false; btn.textContent = '▶ 运行回测';
+    document.getElementById('bt-loading').style.display = 'none';
+    alert('回测失败: ' + err.message);
+  });
+}
+
 connect();
+loadBtDataInfo();
 </script>
 </body>
 </html>

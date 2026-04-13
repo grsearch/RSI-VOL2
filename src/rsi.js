@@ -10,7 +10,7 @@
 //   2. 止损检查独立于 K 线周期，每个 tick 都检查（快速止损）
 //
 // 策略：
-//   BUY : RSI(7) ≤ 30（超卖区） + 窗口内 buyVolume > sellVolume
+//   BUY : RSI(7) < 35（超卖区）+ totalVol ≥ 15 SOL + buyVol ≥ 1.2×sellVol
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
 const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
@@ -21,6 +21,9 @@ const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 
 // 量能参数
 const VOL_ENABLED         = (process.env.VOL_ENABLED || 'true') === 'true';
+const VOL_BUY_MULT        = parseFloat(process.env.VOL_BUY_MULT          || '1.2');
+const VOL_SELL_MULT       = parseFloat(process.env.VOL_SELL_MULT         || '1.2'); // sellVol >= N × buyVol 触发卖出
+const VOL_MIN_TOTAL       = parseFloat(process.env.VOL_MIN_TOTAL         || '15');  // 最低总成交量(SOL) // buyVol >= N × sellVol 才买入
 const VOL_WINDOW_SEC      = parseInt(process.env.VOL_WINDOW_SEC       || '30', 10);
 const VOL_EXIT_CONSECUTIVE = parseInt(process.env.VOL_EXIT_CONSECUTIVE || '2', 10);
 const VOL_EXIT_RATIO      = parseFloat(process.env.VOL_EXIT_RATIO     || '1.0');
@@ -95,22 +98,35 @@ function checkBuyVolume(closedCandles, currentCandle) {
   const total = totalBuy + totalSell;
   const ratio = total > 0 ? totalBuy / total : 0;
 
-  // 没有链上方向数据时放行，退化为纯 RSI
+  // 没有链上方向数据 → 拒绝买入
   if (total === 0) {
-    return { pass: true, reason: 'VOL_NO_DIRECTION_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
+    return { pass: false, reason: 'VOL_NO_DIRECTION_DATA', buyVol: 0, sellVol: 0, ratio: 0 };
   }
 
-  if (totalBuy > totalSell) {
+  // ★ 最低总成交量门槛
+  if (total < VOL_MIN_TOTAL) {
+    const mult = totalSell > 0 ? (totalBuy / totalSell).toFixed(1) : '∞';
     return {
-      pass: true,
-      reason: `BUY>SELL(${totalBuy.toFixed(2)}>${totalSell.toFixed(2)},${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
+      pass: false,
+      reason: `VOL_TOO_LOW(${total.toFixed(1)}<${VOL_MIN_TOTAL}SOL,${mult}x,${VOL_WINDOW_SEC}s)`,
       buyVol: totalBuy, sellVol: totalSell, ratio,
     };
   }
 
+  // 核心条件：buyVol >= VOL_BUY_MULT × sellVol
+  if (totalBuy >= totalSell * VOL_BUY_MULT) {
+    const mult = totalSell > 0 ? (totalBuy / totalSell).toFixed(1) : '∞';
+    return {
+      pass: true,
+      reason: `BUY≥${VOL_BUY_MULT}xSELL(${totalBuy.toFixed(2)}>=${(totalSell*VOL_BUY_MULT).toFixed(2)},${mult}x,${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
+      buyVol: totalBuy, sellVol: totalSell, ratio,
+    };
+  }
+
+  const mult = totalSell > 0 ? (totalBuy / totalSell).toFixed(1) : '0';
   return {
     pass: false,
-    reason: `SELL≥BUY(buy=${totalBuy.toFixed(2)},sell=${totalSell.toFixed(2)},${(ratio*100).toFixed(0)}%,${VOL_WINDOW_SEC}s)`,
+    reason: `BUY<${VOL_BUY_MULT}xSELL(buy=${totalBuy.toFixed(2)},sell=${totalSell.toFixed(2)},${mult}x,${VOL_WINDOW_SEC}s)`,
     buyVol: totalBuy, sellVol: totalSell, ratio,
   };
 }
@@ -251,7 +267,16 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
                reason: sl.reason, volume: volumeInfo };
     }
 
-    // 4. 量能萎缩出场
+    // 4. 卖压超过买压：sellVol >= VOL_SELL_MULT × buyVol
+    if (VOL_ENABLED && winTotal > 0 && winSell >= winBuy * VOL_SELL_MULT && lastCandleTs !== lastSellCandle) {
+      const mult = winBuy > 0 ? (winSell / winBuy).toFixed(1) : '∞';
+      tokenState._lastSellCandle = lastCandleTs;
+      updateState();
+      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+               reason: `SELL_PRESSURE(sell=${winSell.toFixed(2)}>=${(winBuy*VOL_SELL_MULT).toFixed(2)},${mult}x,${VOL_WINDOW_SEC}s)`, volume: volumeInfo };
+    }
+
+    // 5. 量能萎缩出场
     const volDecay = checkVolumeDecay(closedCandles, tokenState);
     if (volDecay.shouldExit) {
       updateState();
@@ -261,8 +286,10 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
+  // ★ RSI < 35（超卖区）+ buyVol >= 2.0 × sellVol
+  // ★ 每根K线检查一次，只要在超卖区就持续检查量能
   if (!tokenState.inPosition) {
-    if (rsiRealtime <= RSI_BUY && lastCandleTs !== lastBuyCandle) {
+    if (rsiRealtime < RSI_BUY && lastCandleTs !== lastBuyCandle) {
       const volCheck = checkBuyVolume(closedCandles, null);
       volumeInfo.buyVol  = volCheck.buyVol;
       volumeInfo.sellVol = volCheck.sellVol;
@@ -272,8 +299,9 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
         tokenState._lastBuyCandle = lastCandleTs;
         updateState();
         return { rsi: rsiRealtime, prevRsi, signal: 'BUY',
-                 reason: `RSI_OVERSOLD(${rsiRealtime.toFixed(1)}≤${RSI_BUY})+${volCheck.reason}`, volume: volumeInfo };
+                 reason: `RSI_OVERSOLD(${rsiRealtime.toFixed(1)}<${RSI_BUY})+${volCheck.reason}`, volume: volumeInfo };
       }
+      // 量能不达标，不标记 lastBuyCandle，下根K线继续检查
     }
   }
 
@@ -400,7 +428,7 @@ module.exports = {
   checkStopLoss,
   CONFIG: {
     RSI_PERIOD, RSI_BUY, RSI_SELL, RSI_PANIC,
-    VOL_ENABLED, VOL_WINDOW_SEC,
+    VOL_ENABLED, VOL_BUY_MULT, VOL_SELL_MULT, VOL_MIN_TOTAL, VOL_WINDOW_SEC,
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, KLINE_SEC,

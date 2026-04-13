@@ -52,6 +52,55 @@ app.get('/api/birdeye-status', (_req, res) => {
   });
 });
 
+// ── 回测 API ──────────────────────────────────────────────────────
+const { runBacktest: btRun } = require('./backtest');
+
+app.post('/api/backtest/run', (req, res) => {
+  try {
+    const params = req.body || {};
+    const files = dataStore.listTickFiles();
+    if (files.length === 0) {
+      return res.json({ error: '无 tick 数据', results: [], summary: null });
+    }
+
+    const results = [];
+    for (const f of files) {
+      try {
+        const ticks = dataStore.loadTicks(f.address);
+        if (!ticks || ticks.length < 10) continue;
+        const result = btRun(ticks, params);
+        if (result && result.trades.length > 0) {
+          results.push({ address: f.address, ...result });
+        }
+      } catch (_) {}
+    }
+
+    // 汇总
+    const allTrades = results.flatMap(r => r.trades);
+    const wins   = allTrades.filter(t => t.pnlSol > 0);
+    const losses = allTrades.filter(t => t.pnlSol < 0);
+    const totalPnlSol = allTrades.reduce((s, t) => s + t.pnlSol, 0);
+    const avgPnl = allTrades.length > 0 ? allTrades.reduce((s, t) => s + t.pnlPct, 0) / allTrades.length : 0;
+
+    const summary = {
+      totalTokens:  files.length,
+      tokensTraded: results.length,
+      totalTrades:  allTrades.length,
+      wins:         wins.length,
+      losses:       losses.length,
+      winRate:      allTrades.length > 0 ? (wins.length / (wins.length + losses.length) * 100) : 0,
+      totalPnlSol:  parseFloat(totalPnlSol.toFixed(4)),
+      avgPnlPct:    parseFloat(avgPnl.toFixed(2)),
+      avgWinPct:    wins.length > 0 ? parseFloat((wins.reduce((s, t) => s + t.pnlPct, 0) / wins.length).toFixed(2)) : 0,
+      avgLossPct:   losses.length > 0 ? parseFloat((losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length).toFixed(2)) : 0,
+    };
+
+    res.json({ results, summary, params });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 服务器 ────────────────────────────────────────────────────────
 const server = http.createServer(app);
 wsHub.init(server);
@@ -96,8 +145,12 @@ server.listen(PORT, () => {
   } else if (heliusKey || heliusRpc.includes('api-key=')) {
     logger.info('   Helius WS: ✅ 统一端点 WebSocket');
   } else {
-    logger.info('   Helius WS: ⚠️ 未配置，量能退化为 tick count');
+    logger.info('   Helius WS: ⚠️ 未配置，量能数据不可用');
   }
+  const subMode = process.env.HELIUS_SUB_MODE || 'token';
+  logger.info('   Helius 订阅: %s', subMode === 'pump'
+    ? '🟡 Pump AMM 单订阅（本地过滤）'
+    : '🟢 按 Token 精准订阅（最省 credits）');
 
   if (heliusLaser) {
     logger.info('   Helius RPC: ✅ LaserStream gRPC（仅用于 sendTransaction 加速）');
