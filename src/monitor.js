@@ -13,7 +13,7 @@
 
 const EventEmitter = require('events');
 const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss,
-        calcRSIWithState,
+        calcRSIWithState, stepRSI,
         TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT } = require('./rsi');
 
 // RSI 卖出阈值（从 CONFIG 取，与 rsi.js 保持一致）
@@ -126,7 +126,9 @@ class TokenMonitor extends EventEmitter {
       _rsiLastClose     : NaN,     // 最新已收盘K线的 close
       _rsiLastCandleTs  : -1,      // 对应的 K 线 openTime（用于检测 K 线是否刷新）
       _rsiPrevTickRsi   : NaN,     // 保留字段（暂未使用）
-      _slPollPrevRsi    : NaN,     // 保留字段（暂未使用）
+      _slPollPrevRsi    : NaN,     // 500ms轮询的上一次实时RSI（用于下穿检测）
+      _wsTickPrevRsi    : NaN,     // ★ WS tick的上一次实时RSI（用于下穿检测）
+      _lastRsiCrossSellTs: 0,      // ★ RSI下穿70的时间防抖（毫秒时间戳）
       // ★ 多次买卖相关
       _sellCooldownUntil: 0,       // 卖出后冷却到期时间戳
       _selling          : false,   // 正在执行卖出中（防并发）
@@ -198,7 +200,7 @@ class TokenMonitor extends EventEmitter {
       price, ts, source: 'price', symbol: state.symbol,
     });
 
-    // ★ 快速止损检查（持仓中 + 未在卖出中） — RSI卖出改在500ms轮询里处理，更可靠
+    // ★ 快速止损检查（持仓中 + 未在卖出中）
     if (state.inPosition && !state._selling && !this._stopLossLocks.has(address)) {
       const sl = checkStopLoss(price, state);
       if (sl.shouldExit) {
@@ -209,6 +211,62 @@ class TokenMonitor extends EventEmitter {
           logger.error('[Monitor] 快速止损执行失败 %s: %s', state.symbol, err.message);
         }).finally(() => {
           this._stopLossLocks.delete(address);
+        });
+        return; // 已触发卖出，不再检查 RSI
+      }
+
+      // ★★ 实时 RSI 卖出检查（每个 WS tick 都算，不等 K 线收盘）
+      this._checkRealtimeRsiSell(state, price);
+    }
+  }
+
+  /**
+   * ★ 实时 RSI 卖出检查 — 用 stepRSI 基于当前 tick 价格计算实时 RSI，
+   *   解决 K 线收盘 RSI 漏掉盘中穿越的问题
+   */
+  _checkRealtimeRsiSell(state, price) {
+    // 需要 evaluateSignal 先跑过至少一次，缓存了 avgGain/avgLoss/lastClose
+    const avgGain   = state._rsiAvgGain;
+    const avgLoss   = state._rsiAvgLoss;
+    const lastClose = state._rsiLastClose;
+    if (!Number.isFinite(avgGain) || !Number.isFinite(avgLoss) || !Number.isFinite(lastClose)) return;
+
+    // 用当前实时价格计算实时 RSI
+    const rsiNow = stepRSI(avgGain, avgLoss, lastClose, price);
+    if (!Number.isFinite(rsiNow)) return;
+
+    const prevRsi = state._wsTickPrevRsi;
+    const now = Date.now();
+
+    // 更新上一次的实时 RSI（用于下穿检测）
+    state._wsTickPrevRsi = rsiNow;
+
+    if (!Number.isFinite(prevRsi)) return; // 第一个 tick，没有 prev，跳过
+
+    // ── RSI > 80 恐慌卖（2秒防抖）──
+    if (rsiNow > _RSI_PANIC) {
+      const lastPanicTs = state._lastPanicSellTs ?? 0;
+      if (now - lastPanicTs >= 2000) {
+        state._lastPanicSellTs = now;
+        logger.info('[Monitor] ⚡ WS实时RSI恐慌卖 %s @ %.8f | RSI=%.1f>%d',
+          state.symbol, price, rsiNow, _RSI_PANIC);
+        this._doSell(state, `RSI_PANIC_RT(${rsiNow.toFixed(1)}>${_RSI_PANIC})`).catch(err => {
+          logger.error('[Monitor] WS RSI恐慌卖失败 %s: %s', state.symbol, err.message);
+        });
+        return;
+      }
+    }
+
+    // ── RSI 下穿 70（实时：prevRsi >= 70 且 rsiNow < 70）──
+    //    用 2 秒时间防抖代替 K 线防抖，因为实时 RSI 可能多次穿越
+    if (prevRsi >= _RSI_SELL && rsiNow < _RSI_SELL) {
+      const lastCrossTs = state._lastRsiCrossSellTs ?? 0;
+      if (now - lastCrossTs >= 2000) {
+        state._lastRsiCrossSellTs = now;
+        logger.info('[Monitor] ⚡ WS实时RSI下穿卖出 %s @ %.8f | RSI %.1f→%.1f',
+          state.symbol, price, prevRsi, rsiNow);
+        this._doSell(state, `RSI_CROSS_DOWN_70_RT(${prevRsi.toFixed(1)}→${rsiNow.toFixed(1)})`).catch(err => {
+          logger.error('[Monitor] WS RSI下穿卖出失败 %s: %s', state.symbol, err.message);
         });
       }
     }
@@ -314,40 +372,72 @@ class TokenMonitor extends EventEmitter {
           continue;
         }
 
-        // ── 2. RSI 卖出检查（V1方式：用最近两根已收盘K线比较，简单可靠） ──
+        // ── 2. RSI 卖出检查（双重方式：已收盘K线 + stepRSI实时估算） ──
         if (state.ticks.length > 0) {
           const { closed: rawCandles } = buildCandles(state.ticks, KLINE_SEC);
           const closedCandles = filterValidCandles(rawCandles);
           if (closedCandles.length >= RSI_CONFIG.RSI_PERIOD + 2) {
             const closes = closedCandles.map(c => c.close);
-            const { rsiArray } = calcRSIWithState(closes);
+            const { rsiArray, avgGain, avgLoss } = calcRSIWithState(closes);
             const len     = closes.length;
-            const rsiNow  = rsiArray[len - 1];  // 最新已收盘K线
-            const rsiPrev = rsiArray[len - 2];  // 上一根已收盘K线
 
-            if (Number.isFinite(rsiNow) && Number.isFinite(rsiPrev)) {
+            // ★ 同时缓存 avgGain/avgLoss/lastClose，供 WS tick 实时 RSI 使用
+            const lastCandleTsPoll = closedCandles[len - 1].openTime;
+            if (lastCandleTsPoll !== state._rsiLastCandleTs) {
+              state._rsiAvgGain     = avgGain;
+              state._rsiAvgLoss     = avgLoss;
+              state._rsiLastClose   = closes[len - 1];
+              state._rsiLastCandleTs = lastCandleTsPoll;
+            }
+
+            // ★ 用 stepRSI 计算实时 RSI（基于当前价格，而非等K线收盘）
+            const rsiRealtime = stepRSI(avgGain, avgLoss, closes[len - 1], price);
+            const rsiClosedLast = rsiArray[len - 1];  // 最新已收盘K线RSI（作为 prev 参考）
+
+            // 取上一次轮询的实时 RSI 作为 prevRsi
+            const prevRsiPoll = state._slPollPrevRsi;
+            state._slPollPrevRsi = rsiRealtime;  // 保存本次，供下次比较
+
+            if (Number.isFinite(rsiRealtime)) {
               // RSI > 80 恐慌卖（2秒防抖）
-              if (rsiNow > _RSI_PANIC) {
+              if (rsiRealtime > _RSI_PANIC) {
                 const lastPanicTs = state._lastPanicSellTs ?? 0;
                 if (Date.now() - lastPanicTs >= 2000) {
                   state._lastPanicSellTs = Date.now();
-                  logger.info('[Monitor] ⚡ RSI恐慌卖出 %s @ %.8f | RSI=%.1f>%d',
-                    state.symbol, price, rsiNow, _RSI_PANIC);
-                  this._doSell(state, `RSI_PANIC(${rsiNow.toFixed(1)}>${_RSI_PANIC})`).catch(err => {
+                  logger.info('[Monitor] ⚡ RSI恐慌卖出(轮询) %s @ %.8f | RSI_RT=%.1f>%d',
+                    state.symbol, price, rsiRealtime, _RSI_PANIC);
+                  this._doSell(state, `RSI_PANIC(RT=${rsiRealtime.toFixed(1)}>${_RSI_PANIC})`).catch(err => {
                     logger.error('[Monitor] RSI恐慌卖出失败 %s: %s', state.symbol, err.message);
                   });
                 }
               }
-              // RSI 下穿70：前一根 >= 70，当前根 < 70（与V1完全一致）
-              else if (rsiPrev >= _RSI_SELL && rsiNow < _RSI_SELL) {
-                const candleTs = closedCandles[len - 1].openTime;
-                if (candleTs !== state._lastSellCandle) {
-                  state._lastSellCandle = candleTs;
-                  logger.info('[Monitor] ⚡ RSI下穿卖出 %s @ %.8f | RSI %.1f→%.1f',
-                    state.symbol, price, rsiPrev, rsiNow);
-                  this._doSell(state, `RSI_CROSS_DOWN_70(${rsiPrev.toFixed(1)}→${rsiNow.toFixed(1)})`).catch(err => {
+              // RSI 下穿70：支持两种 prev 来源
+              //   a) 上次轮询的实时 RSI (prevRsiPoll) — 500ms 间隔的 tick-to-tick 比较
+              //   b) 最新已收盘K线 RSI (rsiClosedLast) — K线级别的下穿
+              else if (Number.isFinite(prevRsiPoll) && prevRsiPoll >= _RSI_SELL && rsiRealtime < _RSI_SELL) {
+                const lastCrossTs = state._lastRsiCrossSellTs ?? 0;
+                if (Date.now() - lastCrossTs >= 2000) {
+                  state._lastRsiCrossSellTs = Date.now();
+                  logger.info('[Monitor] ⚡ RSI下穿卖出(轮询RT) %s @ %.8f | RSI %.1f→%.1f',
+                    state.symbol, price, prevRsiPoll, rsiRealtime);
+                  this._doSell(state, `RSI_CROSS_DOWN_70(RT:${prevRsiPoll.toFixed(1)}→${rsiRealtime.toFixed(1)})`).catch(err => {
                     logger.error('[Monitor] RSI下穿卖出失败 %s: %s', state.symbol, err.message);
                   });
+                }
+              }
+              // 备用：已收盘K线级别下穿（保留原逻辑作为兜底）
+              else if (Number.isFinite(rsiClosedLast)) {
+                const rsiPrevClosed = rsiArray[len - 2];
+                if (Number.isFinite(rsiPrevClosed) && rsiPrevClosed >= _RSI_SELL && rsiClosedLast < _RSI_SELL) {
+                  const candleTs = closedCandles[len - 1].openTime;
+                  if (candleTs !== state._lastSellCandle) {
+                    state._lastSellCandle = candleTs;
+                    logger.info('[Monitor] ⚡ RSI下穿卖出(K线) %s @ %.8f | RSI %.1f→%.1f',
+                      state.symbol, price, rsiPrevClosed, rsiClosedLast);
+                    this._doSell(state, `RSI_CROSS_DOWN_70(K:${rsiPrevClosed.toFixed(1)}→${rsiClosedLast.toFixed(1)})`).catch(err => {
+                      logger.error('[Monitor] RSI下穿卖出失败 %s: %s', state.symbol, err.message);
+                    });
+                  }
                 }
               }
             }
@@ -639,6 +729,9 @@ class TokenMonitor extends EventEmitter {
     state._lastBuyCandle  = -1;
     state._lastSellCandle = -1;
     state._lastPanicSellTs = 0;
+    state._lastRsiCrossSellTs = 0;  // ★ 重置实时RSI下穿防抖
+    state._wsTickPrevRsi  = NaN;    // ★ 重置WS tick RSI历史
+    state._slPollPrevRsi  = NaN;    // ★ 重置轮询RSI历史
 
     const remaining = Math.max(0, MAX_TRADES - state.tradeCount);
     const timeLeft  = Math.max(0, Math.ceil((state.expiresAt - Date.now()) / 60000));
