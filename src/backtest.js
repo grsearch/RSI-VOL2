@@ -318,11 +318,11 @@ function summarize(allResults) {
     wins        : wins.length,
     losses      : losses.length,
     winRate     : wins.length / allTrades.length * 100,
-    totalPnlSol : totalPnlSol.toFixed(4),
-    avgPnlPct   : avgPnlPct.toFixed(2) + '%',
-    avgWinPct   : avgWinPct.toFixed(2) + '%',
-    avgLossPct  : avgLossPct.toFixed(2) + '%',
-    profitFactor: profitFactor === Infinity ? '∞' : profitFactor.toFixed(2),
+    totalPnlSol : parseFloat(totalPnlSol.toFixed(4)),
+    avgPnlPct   : parseFloat(avgPnlPct.toFixed(2)),
+    avgWinPct   : parseFloat(avgWinPct.toFixed(2)),
+    avgLossPct  : parseFloat(avgLossPct.toFixed(2)),
+    profitFactor: profitFactor === Infinity ? 999 : parseFloat(profitFactor.toFixed(2)),
     avgHoldBars : avgHoldBars.toFixed(1),
     exitReasons : countBy(allTrades, t => t.exitReason.replace(/\(.*\)/, '')),
   };
@@ -412,7 +412,7 @@ function gridSearchFromTicks(allTicks) {
     if (summary.totalTrades >= 5) {  // 过滤掉交易次数太少的组合（无统计意义）
       // 综合评分：胜率 × 盈亏比（比纯 PnL 更稳健）
       const wr  = parseFloat(summary.winRate) / 100;
-      const pf  = summary.profitFactor === '∞' ? 10 : parseFloat(summary.profitFactor);
+      const pf  = summary.profitFactor >= 999 ? 10 : summary.profitFactor;
       const score = wr * pf * Math.log10(Math.max(summary.totalTrades, 1));
       results.push({ params: combo, summary, score });
     }
@@ -441,10 +441,10 @@ function gridSearchFromTicks(allTicks) {
       `Sk${String(p.skipFirstCandles).padStart(2)} | ` +
       `${String(s.totalTrades).padStart(4)} | ` +
       `${s.winRate.toFixed(1).padStart(5)}% | ` +
-      `${s.totalPnlSol.padStart(7)} | ` +
-      `${String(s.profitFactor).padStart(6)} | ` +
-      `${s.avgWinPct.padStart(6)} | ` +
-      `${s.avgLossPct.padStart(6)} | ` +
+      `${String(s.totalPnlSol.toFixed(4)).padStart(7)} | ` +
+      `${String(s.profitFactor >= 999 ? '∞' : s.profitFactor).padStart(6)} | ` +
+      `${String(s.avgWinPct.toFixed(1)+'%').padStart(6)} | ` +
+      `${String(s.avgLossPct.toFixed(1)+'%').padStart(6)} | ` +
       `${r.score.toFixed(3)}`
     );
   });
@@ -457,7 +457,7 @@ function gridSearchFromTicks(allTicks) {
       const s = r.summary;
       console.log(
         `  RSI≤${p.rsiBuy} Vol≥${p.volBuyMult}x SL${p.stopLossPct}% TS=${p.trailingStopEnabled ? `+${p.trailingStopActivate}%/${p.trailingStopPct}%` : '关'} Skip${p.skipFirstCandles} | ` +
-        `交易${s.totalTrades} 胜率${s.winRate.toFixed(1)}% PnL=${s.totalPnlSol} 盈亏比${s.profitFactor} 评分${r.score.toFixed(3)}`
+        `交易${s.totalTrades} 胜率${s.winRate.toFixed(1)}% PnL=${s.totalPnlSol.toFixed(4)} 盈亏比${s.profitFactor >= 999 ? '∞' : s.profitFactor} 评分${r.score.toFixed(3)}`
       );
     });
   }
@@ -477,7 +477,7 @@ function gridSearchFromTicks(allTicks) {
       console.log(`TRAILING_STOP_PCT=${p.trailingStopPct}`);
     }
     console.log(`SKIP_FIRST_CANDLES=${p.skipFirstCandles}`);
-    console.log(`\n  回测结果: 交易${best.summary.totalTrades} 胜率${best.summary.winRate.toFixed(1)}% PnL=${best.summary.totalPnlSol}SOL 盈亏比${best.summary.profitFactor}`);
+    console.log(`\n  回测结果: 交易${best.summary.totalTrades} 胜率${best.summary.winRate.toFixed(1)}% PnL=${best.summary.totalPnlSol.toFixed(4)}SOL 盈亏比${best.summary.profitFactor >= 999 ? '∞' : best.summary.profitFactor}`);
   }
 
   return results;
@@ -602,11 +602,11 @@ function main() {
   console.log('  总交易笔数    : %d', summary.totalTrades);
   console.log('  胜 / 负       : %d / %d', summary.wins, summary.losses);
   console.log('  胜率          : %s%%', summary.winRate.toFixed(1));
-  console.log('  总盈亏(SOL)   : %s', summary.totalPnlSol);
-  console.log('  平均盈亏%%     : %s', summary.avgPnlPct);
-  console.log('  平均赢利%%     : %s', summary.avgWinPct);
-  console.log('  平均亏损%%     : %s', summary.avgLossPct);
-  console.log('  盈亏比        : %s', summary.profitFactor);
+  console.log('  总盈亏(SOL)   : %s', summary.totalPnlSol.toFixed(4));
+  console.log('  平均盈亏%%     : %s%%', summary.avgPnlPct.toFixed(2));
+  console.log('  平均赢利%%     : %s%%', summary.avgWinPct.toFixed(2));
+  console.log('  平均亏损%%     : %s%%', summary.avgLossPct.toFixed(2));
+  console.log('  盈亏比        : %s', summary.profitFactor >= 999 ? '∞' : summary.profitFactor);
   console.log('  平均持仓K线数  : %s', summary.avgHoldBars);
   console.log('  出场原因分布  :', JSON.stringify(summary.exitReasons));
   console.log('═══════════════════════════════════════════════════\n');
@@ -624,12 +624,12 @@ function main() {
       } catch (_) {}
     }
     const noVolSummary = summarize(noVolResults);
-    console.log('  [纯RSI] 交易=%d  胜率=%s%%  PnL=%s SOL  盈亏比=%s  avgWin=%s  avgLoss=%s',
-      noVolSummary.totalTrades, noVolSummary.winRate.toFixed(1), noVolSummary.totalPnlSol,
-      noVolSummary.profitFactor, noVolSummary.avgWinPct, noVolSummary.avgLossPct);
-    console.log('  [RSI+量能] 交易=%d  胜率=%s%%  PnL=%s SOL  盈亏比=%s  avgWin=%s  avgLoss=%s',
-      summary.totalTrades, summary.winRate.toFixed(1), summary.totalPnlSol,
-      summary.profitFactor, summary.avgWinPct, summary.avgLossPct);
+    console.log('  [纯RSI] 交易=%d  胜率=%s%%  PnL=%s SOL  盈亏比=%s  avgWin=%s%%  avgLoss=%s%%',
+      noVolSummary.totalTrades, noVolSummary.winRate.toFixed(1), noVolSummary.totalPnlSol.toFixed(4),
+      noVolSummary.profitFactor >= 999 ? '∞' : noVolSummary.profitFactor, noVolSummary.avgWinPct.toFixed(2), noVolSummary.avgLossPct.toFixed(2));
+    console.log('  [RSI+量能] 交易=%d  胜率=%s%%  PnL=%s SOL  盈亏比=%s  avgWin=%s%%  avgLoss=%s%%',
+      summary.totalTrades, summary.winRate.toFixed(1), summary.totalPnlSol.toFixed(4),
+      summary.profitFactor >= 999 ? '∞' : summary.profitFactor, summary.avgWinPct.toFixed(2), summary.avgLossPct.toFixed(2));
     console.log('');
   }
 }

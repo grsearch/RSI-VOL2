@@ -744,8 +744,8 @@ function runGridSearch() {
           <td style="padding:5px 8px;text-align:center">${p.skipFirstCandles}</td>
           <td style="padding:5px 8px;text-align:center">${s.totalTrades}</td>
           <td style="padding:5px 8px;text-align:center;${wrClass}">${s.winRate.toFixed(1)}%</td>
-          <td style="padding:5px 8px;text-align:center;${pnlClass}">${s.totalPnlSol >= 0 ? '+' : ''}${s.totalPnlSol}</td>
-          <td style="padding:5px 8px;text-align:center">${s.profitFactor}</td>
+          <td style="padding:5px 8px;text-align:center;${pnlClass}">${s.totalPnlSol >= 0 ? '+' : ''}${s.totalPnlSol.toFixed(4)}</td>
+          <td style="padding:5px 8px;text-align:center">${s.profitFactor >= 999 ? '∞' : s.profitFactor}</td>
           <td style="padding:5px 8px;text-align:center;color:#3fb950">+${s.avgWinPct.toFixed(1)}%</td>
           <td style="padding:5px 8px;text-align:center;color:#f85149">${s.avgLossPct.toFixed(1)}%</td>
           <td style="padding:5px 8px;text-align:center;color:#58a6ff">${r.score.toFixed(3)}</td>
