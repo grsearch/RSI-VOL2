@@ -221,7 +221,7 @@ class TokenMonitor extends EventEmitter {
           // RSI > PANIC：用已有的时间防抖逻辑
           if (tickRsi > _RSI_PANIC) {
             const lastPanicTs = state._lastPanicSellTs ?? 0;
-            if (Date.now() - lastPanicTs >= 2000) {
+            if (Date.now() - lastPanicTs >= 2000 && !state._selling) {
               state._lastPanicSellTs = Date.now();
               logger.info('[Monitor] ⚡ WS-RSI恐慌触发 %s @ %.8f | RSI=%.1f>%d',
                 state.symbol, price, tickRsi, _RSI_PANIC);
@@ -231,7 +231,8 @@ class TokenMonitor extends EventEmitter {
             }
           }
           // RSI 下穿 SELL：上一 tick ≥ 70，本 tick < 70
-          else if (Number.isFinite(prevTickRsi) && prevTickRsi >= _RSI_SELL && tickRsi < _RSI_SELL) {
+          else if (Number.isFinite(prevTickRsi) && prevTickRsi >= _RSI_SELL && tickRsi < _RSI_SELL
+                   && !state._selling) {
             logger.info('[Monitor] ⚡ WS-RSI下穿触发 %s @ %.8f | RSI %.1f→%.1f',
               state.symbol, price, prevTickRsi, tickRsi);
             this._doSell(state, `RSI_CROSS_DOWN_70(${prevTickRsi.toFixed(1)}→${tickRsi.toFixed(1)})`).catch(err => {
@@ -242,7 +243,6 @@ class TokenMonitor extends EventEmitter {
           state._rsiPrevTickRsi = tickRsi;
         }
       }
-    }
     }
   }
 

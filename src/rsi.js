@@ -32,7 +32,7 @@ const SKIP_FIRST_CANDLES  = parseInt(process.env.SKIP_FIRST_CANDLES   || '8', 10
 
 // 止盈止损
 const TAKE_PROFIT_PCT = parseFloat(process.env.TAKE_PROFIT_PCT || '50');
-const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-10');
+const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-20');
 
 // 移动止损（Trailing Stop）
 const TRAILING_STOP_ENABLED  = (process.env.TRAILING_STOP_ENABLED  || 'true') === 'true';
@@ -244,8 +244,8 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
              avgGain: NaN, avgLoss: NaN, lastClose: NaN };
   }
 
-  const nowMs        = Date.now();
-  const lastCandleTs = closedCandles[len - 1].openTime;
+  const nowMs          = Date.now();
+  // lastCandleTs 已在上方 RSI 缓存块里声明，直接复用
   const lastBuyCandle  = tokenState._lastBuyCandle  ?? -1;
   const lastSellCandle = tokenState._lastSellCandle ?? -1;
 
@@ -328,13 +328,12 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
-  // ★ RSI < 35（超卖区）+ buyVol >= 2.0 × sellVol
-  // ★ 每根K线检查一次，只要在超卖区就持续检查量能
+  // ★ RSI < 30（超卖区）+ buyVol >= 1.2 × sellVol
   if (!tokenState.inPosition) {
     if (rsiRealtime < RSI_BUY && lastCandleTs !== lastBuyCandle) {
       const volCheck = checkBuyVolume(closedCandles, null);
-      volumeInfo.buyVol  = volCheck.buyVol;
-      volumeInfo.sellVol = volCheck.sellVol;
+      volumeInfo.buyVol   = volCheck.buyVol;
+      volumeInfo.sellVol  = volCheck.sellVol;
       volumeInfo.buyRatio = volCheck.ratio;
 
       if (volCheck.pass) {
