@@ -23,7 +23,7 @@ const KLINE_SEC    = parseInt(process.env.KLINE_INTERVAL_SEC || '15', 10);
 //   持仓后追踪 RSI 最高点，当 RSI 从峰值回落超过阈值时卖出
 //   解决 RSI 没到 70 就开始回落的场景
 const RSI_PEAK_DROP_ENABLED  = (process.env.RSI_PEAK_DROP_ENABLED  || 'true') === 'true';
-const RSI_PEAK_DROP_ACTIVATE = parseFloat(process.env.RSI_PEAK_DROP_ACTIVATE || '55');  // RSI 峰值须 ≥ 此值才激活
+const RSI_PEAK_DROP_ACTIVATE = parseFloat(process.env.RSI_PEAK_DROP_ACTIVATE || '70');  // RSI 峰值须 ≥ 此值才激活
 const RSI_PEAK_DROP_DELTA    = parseFloat(process.env.RSI_PEAK_DROP_DELTA    || '10');  // 从峰值回落 ≥ 此值触发卖出
 const RSI_PEAK_DROP_FLOOR    = parseFloat(process.env.RSI_PEAK_DROP_FLOOR    || '50');  // 回落后 RSI 须 ≤ 此值才卖（防止高位微抖）
 
