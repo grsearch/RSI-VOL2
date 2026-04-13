@@ -13,7 +13,7 @@
 //   BUY : RSI(7) < 35（超卖区）+ totalVol ≥ 15 SOL + buyVol ≥ 1.2×sellVol
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
-const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
+const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '9',  10);
 const RSI_BUY      = parseFloat(process.env.RSI_BUY_LEVEL  || '30');
 const RSI_SELL     = parseFloat(process.env.RSI_SELL_LEVEL  || '70');
 const RSI_PANIC    = parseFloat(process.env.RSI_PANIC_LEVEL || '80');
@@ -228,10 +228,20 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   const lastClosedRsi = rsiArray[len - 1];
   const lastClose     = closes[len - 1];
 
+  // ★ 缓存到 tokenState，供 WS tick 快速下穿检测使用（避免重复计算）
+  const lastCandleTs = closedCandles[len - 1].openTime;
+  if (lastCandleTs !== tokenState._rsiLastCandleTs) {
+    tokenState._rsiAvgGain      = avgGain;
+    tokenState._rsiAvgLoss      = avgLoss;
+    tokenState._rsiLastClose    = lastClose;
+    tokenState._rsiLastCandleTs = lastCandleTs;
+  }
+
   const rsiRealtime = stepRSI(avgGain, avgLoss, lastClose, realtimePrice, RSI_PERIOD);
 
   if (!Number.isFinite(lastClosedRsi) || !Number.isFinite(rsiRealtime)) {
-    return { rsi: NaN, prevRsi: NaN, signal: null, reason: 'rsi_nan', volume: {} };
+    return { rsi: NaN, prevRsi: NaN, signal: null, reason: 'rsi_nan', volume: {},
+             avgGain: NaN, avgLoss: NaN, lastClose: NaN };
   }
 
   const nowMs        = Date.now();
