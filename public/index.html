@@ -49,6 +49,7 @@
   .exit-fail{background:#4d1c1c;color:#f85149}
   .exit-hold{background:#21262d;color:#8b949e}
   .exit-max{background:#1a3a5c;color:#58a6ff}
+  .exit-trailing{background:#3d2200;color:#f0883e}
   .buy-reason{font-size:10px;color:#8b949e;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   a.gmgn{color:#58a6ff;text-decoration:none;font-size:11px}
   a.gmgn:hover{text-decoration:underline}
@@ -162,6 +163,14 @@
       <div>
         <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止损 %</label>
         <input type="number" id="bt-stoploss" value="-10" min="-50" max="0" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">移动止损激活 %</label>
+        <input type="number" id="bt-trailing-activate" value="30" min="5" max="200" step="5" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">移动止损回撤 %</label>
+        <input type="number" id="bt-trailing-pct" value="-20" min="-50" max="-1" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
       </div>
       <div>
         <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止盈 %</label>
@@ -466,6 +475,8 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-tp">止盈 ${detail}</span>`;
   if (r.startsWith('STOP_LOSS'))
     return `<span class="exit-tag exit-sl">止损 ${detail}</span>`;
+  if (r.startsWith('TRAILING_STOP'))
+    return `<span class="exit-tag exit-trailing">移动止损 ${detail}</span>`;
   if (r.startsWith('SELL_PRESSURE'))
     return `<span class="exit-tag exit-vol">卖压 ${detail}</span>`;
   if (r.startsWith('VOL_DECAY'))
@@ -582,6 +593,9 @@ function runBacktest() {
     volWindowSec:       parseInt(document.getElementById('bt-volwindow').value),
     stopLossPct:        parseFloat(document.getElementById('bt-stoploss').value),
     takeProfitPct:      parseFloat(document.getElementById('bt-takeprofit').value),
+    trailingStopEnabled:  true,
+    trailingStopActivate: parseFloat(document.getElementById('bt-trailing-activate').value),
+    trailingStopPct:      parseFloat(document.getElementById('bt-trailing-pct').value),
     skipFirstCandles:   parseInt(document.getElementById('bt-skip').value),
     volExitRatio:       parseFloat(document.getElementById('bt-decayratio').value),
     volExitConsecutive: parseInt(document.getElementById('bt-decaycons').value),
