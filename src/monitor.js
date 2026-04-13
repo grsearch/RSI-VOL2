@@ -108,6 +108,7 @@ class TokenMonitor extends EventEmitter {
       _prevRsiTs        : 0,
       _lastBuyCandle    : -1,
       _lastSellCandle   : -1,
+      _lastPanicSellTs  : 0,       // RSI_PANIC 时间防抖（毫秒时间戳）
       _lastPriceUsd     : null,
       _lastPriceTs      : 0,
       // ★ 多次买卖相关
@@ -579,6 +580,7 @@ class TokenMonitor extends EventEmitter {
     // 重置 RSI 穿越防抖（允许新的穿越信号）
     state._lastBuyCandle  = -1;
     state._lastSellCandle = -1;
+    state._lastPanicSellTs = 0;
 
     const remaining = Math.max(0, MAX_TRADES - state.tradeCount);
     const timeLeft  = Math.max(0, Math.ceil((state.expiresAt - Date.now()) / 60000));

@@ -244,11 +244,16 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   if (tokenState.inPosition) {
 
     // 1. RSI > 80 恐慌卖
-    if (rsiRealtime > RSI_PANIC && lastCandleTs !== lastSellCandle) {
-      tokenState._lastSellCandle = lastCandleTs;
-      updateState();
-      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
-               reason: `RSI_PANIC(${rsiRealtime.toFixed(1)}>${RSI_PANIC})`, volume: volumeInfo };
+    //    ★ 不受 lastSellCandle 限制（修复：K线防抖会导致同K线内卖出失败后无法重试）
+    //    ★ 改用 2 秒时间防抖，避免每个 tick 都重复触发日志，但保证卖出失败后能重试
+    if (rsiRealtime > RSI_PANIC) {
+      const lastPanicTs = tokenState._lastPanicSellTs ?? 0;
+      if (nowMs - lastPanicTs >= 2000) {
+        tokenState._lastPanicSellTs = nowMs;
+        updateState();
+        return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+                 reason: `RSI_PANIC(${rsiRealtime.toFixed(1)}>${RSI_PANIC})`, volume: volumeInfo };
+      }
     }
 
     // 2. RSI 下穿 70
