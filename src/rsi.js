@@ -13,7 +13,7 @@
 //   BUY : RSI(7) < 35（超卖区）+ totalVol ≥ 15 SOL + buyVol ≥ 1.2×sellVol
 //   SELL: RSI 下穿 70 / RSI > 80 / 止盈 / 止损 / 量能萎缩出场
 
-const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '7',  10);
+const RSI_PERIOD   = parseInt(process.env.RSI_PERIOD       || '9',  10);
 const RSI_BUY      = parseFloat(process.env.RSI_BUY_LEVEL  || '30');
 const RSI_SELL     = parseFloat(process.env.RSI_SELL_LEVEL  || '70');
 const RSI_PANIC    = parseFloat(process.env.RSI_PANIC_LEVEL || '80');
@@ -32,7 +32,12 @@ const SKIP_FIRST_CANDLES  = parseInt(process.env.SKIP_FIRST_CANDLES   || '8', 10
 
 // 止盈止损
 const TAKE_PROFIT_PCT = parseFloat(process.env.TAKE_PROFIT_PCT || '50');
-const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-10');
+const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-20');
+
+// 移动止损（Trailing Stop）
+const TRAILING_STOP_ENABLED  = (process.env.TRAILING_STOP_ENABLED  || 'true') === 'true';
+const TRAILING_STOP_ACTIVATE = parseFloat(process.env.TRAILING_STOP_ACTIVATE || '30'); // 上涨 30% 后激活
+const TRAILING_STOP_PCT      = parseFloat(process.env.TRAILING_STOP_PCT      || '-20'); // 峰值回撤 20% 清仓
 
 // ── Wilder RSI 计算 ────────────────────────────────────────────────
 
@@ -169,9 +174,31 @@ function checkStopLoss(currentPrice, tokenState) {
     return { shouldExit: false, reason: '' };
   }
 
-  const pnl = (currentPrice - tokenState.position.entryPriceUsd)
-            / tokenState.position.entryPriceUsd * 100;
+  const entryPrice = tokenState.position.entryPriceUsd;
+  const pnl = (currentPrice - entryPrice) / entryPrice * 100;
 
+  // ── 移动止损（Trailing Stop）────────────────────────────────────
+  if (TRAILING_STOP_ENABLED && tokenState.position) {
+    // 每个 tick 更新峰值价格
+    if (!tokenState.position._peakPrice || currentPrice > tokenState.position._peakPrice) {
+      tokenState.position._peakPrice = currentPrice;
+    }
+    const peakPrice = tokenState.position._peakPrice;
+    const peakPnl   = (peakPrice - entryPrice) / entryPrice * 100;
+
+    // 上涨达到激活线后，从峰值回撤超过阈值则清仓
+    if (peakPnl >= TRAILING_STOP_ACTIVATE) {
+      const dropFromPeak = (currentPrice - peakPrice) / peakPrice * 100;
+      if (dropFromPeak <= TRAILING_STOP_PCT) {
+        return {
+          shouldExit: true,
+          reason: `TRAILING_STOP(峰值+${peakPnl.toFixed(1)}%,回撤${dropFromPeak.toFixed(1)}%≤${TRAILING_STOP_PCT}%)`
+        };
+      }
+    }
+  }
+
+  // ── 固定止盈 / 固定止损 ───────────────────────────────────────
   if (pnl >= TAKE_PROFIT_PCT) {
     return { shouldExit: true, reason: `TAKE_PROFIT(+${pnl.toFixed(1)}%≥${TAKE_PROFIT_PCT}%)` };
   }
@@ -201,14 +228,24 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   const lastClosedRsi = rsiArray[len - 1];
   const lastClose     = closes[len - 1];
 
+  // ★ 缓存到 tokenState，供 WS tick 快速下穿检测使用（避免重复计算）
+  const lastCandleTs = closedCandles[len - 1].openTime;
+  if (lastCandleTs !== tokenState._rsiLastCandleTs) {
+    tokenState._rsiAvgGain      = avgGain;
+    tokenState._rsiAvgLoss      = avgLoss;
+    tokenState._rsiLastClose    = lastClose;
+    tokenState._rsiLastCandleTs = lastCandleTs;
+  }
+
   const rsiRealtime = stepRSI(avgGain, avgLoss, lastClose, realtimePrice, RSI_PERIOD);
 
   if (!Number.isFinite(lastClosedRsi) || !Number.isFinite(rsiRealtime)) {
-    return { rsi: NaN, prevRsi: NaN, signal: null, reason: 'rsi_nan', volume: {} };
+    return { rsi: NaN, prevRsi: NaN, signal: null, reason: 'rsi_nan', volume: {},
+             avgGain: NaN, avgLoss: NaN, lastClose: NaN };
   }
 
-  const nowMs        = Date.now();
-  const lastCandleTs = closedCandles[len - 1].openTime;
+  const nowMs          = Date.now();
+  // lastCandleTs 已在上方 RSI 缓存块里声明，直接复用
   const lastBuyCandle  = tokenState._lastBuyCandle  ?? -1;
   const lastSellCandle = tokenState._lastSellCandle ?? -1;
 
@@ -244,11 +281,16 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   if (tokenState.inPosition) {
 
     // 1. RSI > 80 恐慌卖
-    if (rsiRealtime > RSI_PANIC && lastCandleTs !== lastSellCandle) {
-      tokenState._lastSellCandle = lastCandleTs;
-      updateState();
-      return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
-               reason: `RSI_PANIC(${rsiRealtime.toFixed(1)}>${RSI_PANIC})`, volume: volumeInfo };
+    //    ★ 不受 lastSellCandle 限制（修复：K线防抖会导致同K线内卖出失败后无法重试）
+    //    ★ 改用 2 秒时间防抖，避免每个 tick 都重复触发日志，但保证卖出失败后能重试
+    if (rsiRealtime > RSI_PANIC) {
+      const lastPanicTs = tokenState._lastPanicSellTs ?? 0;
+      if (nowMs - lastPanicTs >= 2000) {
+        tokenState._lastPanicSellTs = nowMs;
+        updateState();
+        return { rsi: rsiRealtime, prevRsi, signal: 'SELL',
+                 reason: `RSI_PANIC(${rsiRealtime.toFixed(1)}>${RSI_PANIC})`, volume: volumeInfo };
+      }
     }
 
     // 2. RSI 下穿 70
@@ -286,13 +328,12 @@ function evaluateSignal(closedCandles, realtimePrice, tokenState) {
   }
 
   // ── BUY ────────────────────────────────────────────────────────
-  // ★ RSI < 35（超卖区）+ buyVol >= 2.0 × sellVol
-  // ★ 每根K线检查一次，只要在超卖区就持续检查量能
+  // ★ RSI < 30（超卖区）+ buyVol >= 1.2 × sellVol
   if (!tokenState.inPosition) {
     if (rsiRealtime < RSI_BUY && lastCandleTs !== lastBuyCandle) {
       const volCheck = checkBuyVolume(closedCandles, null);
-      volumeInfo.buyVol  = volCheck.buyVol;
-      volumeInfo.sellVol = volCheck.sellVol;
+      volumeInfo.buyVol   = volCheck.buyVol;
+      volumeInfo.sellVol  = volCheck.sellVol;
       volumeInfo.buyRatio = volCheck.ratio;
 
       if (volCheck.pass) {
@@ -432,5 +473,6 @@ module.exports = {
     VOL_EXIT_CONSECUTIVE, VOL_EXIT_RATIO, VOL_EXIT_LOOKBACK,
     SKIP_FIRST_CANDLES,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, KLINE_SEC,
+    TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT,
   },
 };

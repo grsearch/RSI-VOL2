@@ -12,7 +12,14 @@
 //   addToken → [BUY → SELL → 冷却 → BUY → SELL → ...] → EXPIRED/MAX_TRADES → removeToken
 
 const EventEmitter = require('events');
-const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss } = require('./rsi');
+const { evaluateSignal, buildCandles, filterValidCandles, checkStopLoss,
+        calcRSIWithState, stepRSI,
+        TRAILING_STOP_ENABLED, TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT } = require('./rsi');
+
+// RSI 卖出阈值（从 CONFIG 取，与 rsi.js 保持一致）
+const { CONFIG: RSI_CONFIG } = require('./rsi');
+const _RSI_SELL  = RSI_CONFIG.RSI_SELL;
+const _RSI_PANIC = RSI_CONFIG.RSI_PANIC;
 const trader    = require('./trader');
 const birdeye   = require('./birdeye');
 const logger    = require('./logger');
@@ -72,6 +79,8 @@ class TokenMonitor extends EventEmitter {
     logger.info('[Monitor]   BirdeyeWS=%s  HeliusWS=%s  止损轮询=500ms',
       birdeye.priceStream.isConnected() ? '已连接' : '连接中',
       heliusWs.isConnected() ? '已连接' : '连接中');
+    logger.info('[Monitor]   移动止损=%s  激活线=+%s%%  回撤线=%s%%',
+      TRAILING_STOP_ENABLED ? '开启' : '关闭', TRAILING_STOP_ACTIVATE, TRAILING_STOP_PCT);
   }
 
   stop() {
@@ -108,8 +117,16 @@ class TokenMonitor extends EventEmitter {
       _prevRsiTs        : 0,
       _lastBuyCandle    : -1,
       _lastSellCandle   : -1,
+      _lastPanicSellTs  : 0,       // RSI_PANIC 时间防抖（毫秒时间戳）
       _lastPriceUsd     : null,
       _lastPriceTs      : 0,
+      // ★ 实时 RSI 下穿检测缓存（每个 WS tick 更新，不依赖 1s 轮询）
+      _rsiAvgGain       : NaN,     // 最新已收盘K线的 avgGain
+      _rsiAvgLoss       : NaN,     // 最新已收盘K线的 avgLoss
+      _rsiLastClose     : NaN,     // 最新已收盘K线的 close
+      _rsiLastCandleTs  : -1,      // 对应的 K 线 openTime（用于检测 K 线是否刷新）
+      _rsiPrevTickRsi   : NaN,     // 上一个 WS tick 的实时 RSI（用于下穿检测）
+      _slPollPrevRsi    : NaN,     // 止损轮询上一次的 RSI（500ms 间隔下穿检测用）
       // ★ 多次买卖相关
       _sellCooldownUntil: 0,       // 卖出后冷却到期时间戳
       _selling          : false,   // 正在执行卖出中（防并发）
@@ -181,7 +198,7 @@ class TokenMonitor extends EventEmitter {
       price, ts, source: 'price', symbol: state.symbol,
     });
 
-    // ★ 快速止损检查（持仓中 + 非冷却期 + 未在卖出中）
+    // ★ 快速止损检查（持仓中 + 未在卖出中） — RSI卖出改在500ms轮询里处理，更可靠
     if (state.inPosition && !state._selling && !this._stopLossLocks.has(address)) {
       const sl = checkStopLoss(price, state);
       if (sl.shouldExit) {
@@ -282,6 +299,7 @@ class TokenMonitor extends EventEmitter {
         state._lastPriceUsd = price;
         state._lastPriceTs = Date.now();
 
+        // ── 1. 止损/移动止损检查 ──────────────────────────────
         const sl = checkStopLoss(price, state);
         if (sl.shouldExit) {
           const holdSec = state.position?.buyTime ? Math.round((Date.now() - state.position.buyTime) / 1000) : 0;
@@ -293,6 +311,45 @@ class TokenMonitor extends EventEmitter {
           }).finally(() => {
             this._stopLossLocks.delete(address);
           });
+          continue;
+        }
+
+        // ── 2. RSI 卖出检查（用完整 ticks 重新计算，确保和图表一致） ──
+        if (state.ticks.length > 0) {
+          const { closed: rawCandles } = buildCandles(state.ticks, KLINE_SEC);
+          const closedCandles = filterValidCandles(rawCandles);
+          if (closedCandles.length >= RSI_CONFIG.RSI_PERIOD + 2) {
+            const closes = closedCandles.map(c => c.close);
+            const { avgGain, avgLoss } = calcRSIWithState(closes);
+            const lastClose = closes[closes.length - 1];
+            const rsiNow = stepRSI(avgGain, avgLoss, lastClose, price);
+
+            if (Number.isFinite(rsiNow)) {
+              const prevRsi = state._slPollPrevRsi;
+              state._slPollPrevRsi = rsiNow;
+
+              // RSI > 80 恐慌卖（2秒防抖）
+              if (rsiNow > _RSI_PANIC) {
+                const lastPanicTs = state._lastPanicSellTs ?? 0;
+                if (Date.now() - lastPanicTs >= 2000) {
+                  state._lastPanicSellTs = Date.now();
+                  logger.info('[Monitor] ⚡ RSI恐慌卖出 %s @ %.8f | RSI=%.1f>%d',
+                    state.symbol, price, rsiNow, _RSI_PANIC);
+                  this._doSell(state, `RSI_PANIC(${rsiNow.toFixed(1)}>${_RSI_PANIC})`).catch(err => {
+                    logger.error('[Monitor] RSI恐慌卖出失败 %s: %s', state.symbol, err.message);
+                  });
+                }
+              }
+              // RSI 下穿 70
+              else if (Number.isFinite(prevRsi) && prevRsi >= _RSI_SELL && rsiNow < _RSI_SELL) {
+                logger.info('[Monitor] ⚡ RSI下穿卖出 %s @ %.8f | RSI %.1f→%.1f',
+                  state.symbol, price, prevRsi, rsiNow);
+                this._doSell(state, `RSI_CROSS_DOWN_70(${prevRsi.toFixed(1)}→${rsiNow.toFixed(1)})`).catch(err => {
+                  logger.error('[Monitor] RSI下穿卖出失败 %s: %s', state.symbol, err.message);
+                });
+              }
+            }
+          }
         }
       } catch (_) {}
     }
@@ -462,6 +519,7 @@ class TokenMonitor extends EventEmitter {
         buyTxid       : `DRY_${Date.now()}`,
         buyTime       : Date.now(),
         buyReason     : reason,
+        _peakPrice    : price,  // ★ 移动止损：初始峰值 = 买入价
       };
       state.tradeCount++;
       this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason,
@@ -472,20 +530,40 @@ class TokenMonitor extends EventEmitter {
     } else {
       try {
         const result = await trader.buy(state.address, state.symbol);
+
+        // ★ 买单成交后，等 500ms 再查一次实际成交价
+        //   避免用"信号触发时价格"做止损基准（memecoin 滑点可能很大）
+        let actualEntryPrice = price;
+        try {
+          await new Promise(r => setTimeout(r, 500));
+          const postFillPrice = await birdeye.getPrice(state.address);
+          if (postFillPrice && postFillPrice > 0) {
+            actualEntryPrice = postFillPrice;
+            if (Math.abs(postFillPrice - price) / price > 0.02) {
+              logger.warn('[Monitor] ⚠️ BUY #%d %s 成交价偏差: 信号=%.6f 实际=%.6f (%.1f%%)',
+                tradeNum, state.symbol, price, postFillPrice,
+                (postFillPrice - price) / price * 100);
+            }
+          }
+        } catch (_) { /* 查询失败保留信号价 */ }
+
         state.position = {
-          entryPriceUsd : price,
+          entryPriceUsd : actualEntryPrice,  // ★ 用实际成交后价格，不用信号触发时价格
+          signalPriceUsd: price,             // 保留信号价用于参考
           amountToken   : result.amountOut,
           solIn         : result.solIn,
           buyTxid       : result.txid,
           buyTime       : Date.now(),
           buyReason     : reason,
+          _peakPrice    : actualEntryPrice,  // ★ 移动止损：初始峰值 = 实际成交价
         };
         state.tradeCount++;
-        this._addTradeLog(state, { type: 'BUY', symbol: state.symbol, price, reason,
+        this._addTradeLog(state, { type: 'BUY', symbol: state.symbol,
+          price: actualEntryPrice, signalPrice: price, reason,
           txid: result.txid, solIn: result.solIn, tradeNum });
         this._createTradeRecord(state);
-        logger.info('[Monitor] ✅ BUY #%d %s  solIn=%.4f SOL  txid=%s',
-          tradeNum, state.symbol, result.solIn, result.txid);
+        logger.info('[Monitor] ✅ BUY #%d %s  solIn=%.4f SOL  entryPrice=%.6f  txid=%s',
+          tradeNum, state.symbol, result.solIn, actualEntryPrice, result.txid);
       } catch (err) {
         logger.error('[Monitor] ❌ BUY #%d %s 失败: %s', tradeNum, state.symbol, err.message);
         state.inPosition = false;
@@ -558,6 +636,9 @@ class TokenMonitor extends EventEmitter {
     // 重置 RSI 穿越防抖（允许新的穿越信号）
     state._lastBuyCandle  = -1;
     state._lastSellCandle = -1;
+    state._lastPanicSellTs = 0;
+    state._rsiPrevTickRsi  = NaN;
+    state._slPollPrevRsi   = NaN;  // ★ 重置轮询RSI，防止旧值误触发下穿
 
     const remaining = Math.max(0, MAX_TRADES - state.tradeCount);
     const timeLeft  = Math.max(0, Math.ceil((state.expiresAt - Date.now()) / 60000));

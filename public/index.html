@@ -49,6 +49,7 @@
   .exit-fail{background:#4d1c1c;color:#f85149}
   .exit-hold{background:#21262d;color:#8b949e}
   .exit-max{background:#1a3a5c;color:#58a6ff}
+  .exit-trailing{background:#3d2200;color:#f0883e}
   .buy-reason{font-size:10px;color:#8b949e;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   a.gmgn{color:#58a6ff;text-decoration:none;font-size:11px}
   a.gmgn:hover{text-decoration:underline}
@@ -161,7 +162,15 @@
       </div>
       <div>
         <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止损 %</label>
-        <input type="number" id="bt-stoploss" value="-10" min="-50" max="0" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+        <input type="number" id="bt-stoploss" value="-20" min="-50" max="0" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">移动止损激活 %</label>
+        <input type="number" id="bt-trailing-activate" value="30" min="5" max="200" step="5" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">移动止损回撤 %</label>
+        <input type="number" id="bt-trailing-pct" value="-20" min="-50" max="-1" step="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:5px 8px;border-radius:4px;font-size:13px">
       </div>
       <div>
         <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">止盈 %</label>
@@ -191,6 +200,45 @@
         <button onclick="runBacktest()" id="bt-run-btn" style="width:100%;background:#1a4731;border:1px solid #3fb950;color:#3fb950;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold">▶ 运行回测</button>
       </div>
     </div>
+
+    <!-- 网格搜索按钮 -->
+    <div style="margin-top:10px;display:flex;align-items:center;gap:12px">
+      <button onclick="runGridSearch()" id="bt-grid-btn" style="background:#1a2a4a;border:1px solid #58a6ff;color:#58a6ff;padding:6px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold">🔍 网格搜索最优参数（~1300组合）</button>
+      <span style="font-size:11px;color:#8b949e">固定: K线5s / RSI9 / 卖压8888 — 搜索买入阈值、量能倍数、止损、移动止损等组合</span>
+    </div>
+
+    <!-- 网格搜索结果 -->
+    <div id="grid-results" style="display:none;margin-top:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:13px;color:#e6edf3;font-weight:bold">🏆 Top 20 最优参数组合</span>
+        <span style="font-size:11px;color:#8b949e">评分 = 胜率 × 盈亏比 × log(交易数)</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="grid-table" style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead>
+            <tr style="color:#8b949e;border-bottom:1px solid #21262d">
+              <th style="padding:6px 8px;text-align:left">排名</th>
+              <th style="padding:6px 8px">RSI买入</th>
+              <th style="padding:6px 8px">量能倍数</th>
+              <th style="padding:6px 8px">固定止损</th>
+              <th style="padding:6px 8px">移动止损</th>
+              <th style="padding:6px 8px">跳过K线</th>
+              <th style="padding:6px 8px">交易数</th>
+              <th style="padding:6px 8px">胜率</th>
+              <th style="padding:6px 8px">总PnL(SOL)</th>
+              <th style="padding:6px 8px">盈亏比</th>
+              <th style="padding:6px 8px">均盈%</th>
+              <th style="padding:6px 8px">均亏%</th>
+              <th style="padding:6px 8px">评分</th>
+              <th style="padding:6px 8px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="grid-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="grid-loading" style="display:none;text-align:center;padding:20px;color:#8b949e">⏳ 网格搜索中，约需 10-30 秒...</div>
+    <div id="grid-error" style="display:none;text-align:center;padding:12px;color:#f85149"></div>
     <!-- 回测结果 -->
     <div id="bt-results" style="display:none">
       <div id="bt-summary" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px"></div>
@@ -466,6 +514,8 @@ function fmtExitReason(reason) {
     return `<span class="exit-tag exit-tp">止盈 ${detail}</span>`;
   if (r.startsWith('STOP_LOSS'))
     return `<span class="exit-tag exit-sl">止损 ${detail}</span>`;
+  if (r.startsWith('TRAILING_STOP'))
+    return `<span class="exit-tag exit-trailing">移动止损 ${detail}</span>`;
   if (r.startsWith('SELL_PRESSURE'))
     return `<span class="exit-tag exit-vol">卖压 ${detail}</span>`;
   if (r.startsWith('VOL_DECAY'))
@@ -582,6 +632,9 @@ function runBacktest() {
     volWindowSec:       parseInt(document.getElementById('bt-volwindow').value),
     stopLossPct:        parseFloat(document.getElementById('bt-stoploss').value),
     takeProfitPct:      parseFloat(document.getElementById('bt-takeprofit').value),
+    trailingStopEnabled:  true,
+    trailingStopActivate: parseFloat(document.getElementById('bt-trailing-activate').value),
+    trailingStopPct:      parseFloat(document.getElementById('bt-trailing-pct').value),
     skipFirstCandles:   parseInt(document.getElementById('bt-skip').value),
     volExitRatio:       parseFloat(document.getElementById('bt-decayratio').value),
     volExitConsecutive: parseInt(document.getElementById('bt-decaycons').value),
@@ -647,6 +700,86 @@ function runBacktest() {
     document.getElementById('bt-loading').style.display = 'none';
     alert('回测失败: ' + err.message);
   });
+}
+
+function runGridSearch() {
+  const btn = document.getElementById('bt-grid-btn');
+  btn.disabled = true; btn.textContent = '⏳ 搜索中...';
+  document.getElementById('grid-loading').style.display = '';
+  document.getElementById('grid-results').style.display = 'none';
+  document.getElementById('grid-error').style.display = 'none';
+
+  fetch('/api/backtest/grid', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false; btn.textContent = '🔍 网格搜索最优参数（~1300组合）';
+      document.getElementById('grid-loading').style.display = 'none';
+
+      if (data.error) {
+        document.getElementById('grid-error').style.display = '';
+        document.getElementById('grid-error').textContent = data.error;
+        return;
+      }
+
+      document.getElementById('grid-results').style.display = '';
+      const tbody = document.getElementById('grid-tbody');
+      tbody.innerHTML = '';
+
+      data.results.forEach((r, i) => {
+        const p = r.params;
+        const s = r.summary;
+        const tsStr = p.trailingStopEnabled
+          ? `+${p.trailingStopActivate}%↓${p.trailingStopPct}%`
+          : '关闭';
+        const pnlClass = s.totalPnlSol >= 0 ? 'color:#3fb950' : 'color:#f85149';
+        const wrClass  = s.winRate >= 50 ? 'color:#3fb950' : 'color:#f85149';
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #21262d';
+        tr.innerHTML = `
+          <td style="padding:5px 8px;color:#8b949e">#${i+1}</td>
+          <td style="padding:5px 8px;text-align:center">≤${p.rsiBuy}</td>
+          <td style="padding:5px 8px;text-align:center">≥${p.volBuyMult}x</td>
+          <td style="padding:5px 8px;text-align:center;color:#f85149">${p.stopLossPct}%</td>
+          <td style="padding:5px 8px;text-align:center;font-size:11px">${tsStr}</td>
+          <td style="padding:5px 8px;text-align:center">${p.skipFirstCandles}</td>
+          <td style="padding:5px 8px;text-align:center">${s.totalTrades}</td>
+          <td style="padding:5px 8px;text-align:center;${wrClass}">${s.winRate.toFixed(1)}%</td>
+          <td style="padding:5px 8px;text-align:center;${pnlClass}">${s.totalPnlSol >= 0 ? '+' : ''}${s.totalPnlSol.toFixed(4)}</td>
+          <td style="padding:5px 8px;text-align:center">${s.profitFactor >= 999 ? '∞' : s.profitFactor}</td>
+          <td style="padding:5px 8px;text-align:center;color:#3fb950">+${s.avgWinPct.toFixed(1)}%</td>
+          <td style="padding:5px 8px;text-align:center;color:#f85149">${s.avgLossPct.toFixed(1)}%</td>
+          <td style="padding:5px 8px;text-align:center;color:#58a6ff">${r.score.toFixed(3)}</td>
+          <td style="padding:5px 8px;text-align:center">
+            <button onclick="applyGridParams(${i})" style="background:#1a3a5c;border:1px solid #58a6ff;color:#58a6ff;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:11px">应用</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      // 存储结果供应用按钮使用
+      window._gridResults = data.results;
+    })
+    .catch(err => {
+      btn.disabled = false; btn.textContent = '🔍 网格搜索最优参数（~1300组合）';
+      document.getElementById('grid-loading').style.display = 'none';
+      document.getElementById('grid-error').style.display = '';
+      document.getElementById('grid-error').textContent = '搜索失败: ' + err.message;
+    });
+}
+
+function applyGridParams(idx) {
+  const r = window._gridResults && window._gridResults[idx];
+  if (!r) return;
+  const p = r.params;
+  // 把最优参数填入回测表单
+  document.getElementById('bt-rsibuy').value   = p.rsiBuy;
+  document.getElementById('bt-stoploss').value = p.stopLossPct;
+  document.getElementById('bt-volmult').value  = p.volBuyMult;
+  document.getElementById('bt-skip').value     = p.skipFirstCandles;
+  document.getElementById('bt-trailing-activate').value = p.trailingStopEnabled ? p.trailingStopActivate : 30;
+  document.getElementById('bt-trailing-pct').value      = p.trailingStopEnabled ? p.trailingStopPct : -20;
+  // 滚动到回测表单
+  document.getElementById('bt-run-btn').scrollIntoView({ behavior: 'smooth' });
 }
 
 connect();
