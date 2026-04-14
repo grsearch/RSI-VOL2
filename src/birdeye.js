@@ -217,8 +217,17 @@ async function getPrice(address) {
 }
 
 async function getFdv(address) {
+  const overview = await getTokenOverview(address);
+  return overview?.fdv ?? null;
+}
+
+/**
+ * 获取 token 的 FDV 和 LP（流动性），共用同一个缓存
+ * @returns {{ fdv: number|null, lp: number|null }}
+ */
+async function getTokenOverview(address) {
   const cached = _fdvCache.get(address);
-  if (cached && Date.now() - cached.ts < FDV_CACHE_MS) return cached.fdv;
+  if (cached && Date.now() - cached.ts < FDV_CACHE_MS) return { fdv: cached.fdv, lp: cached.lp };
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -230,15 +239,16 @@ async function getFdv(address) {
     });
     if (!res.ok) {
       logger.warn('[Birdeye] token_overview %s 返回 %d', address, res.status);
-      return cached?.fdv ?? null;
+      return { fdv: cached?.fdv ?? null, lp: cached?.lp ?? null };
     }
     const json = await res.json();
     const fdv = json?.data?.fdv ?? json?.data?.mc ?? null;
-    _fdvCache.set(address, { fdv, ts: Date.now() });
-    return fdv;
+    const lp  = json?.data?.liquidity ?? null;
+    _fdvCache.set(address, { fdv, lp, ts: Date.now() });
+    return { fdv, lp };
   } catch (err) {
-    logger.warn('[Birdeye] getFdv %s 失败: %s', address, err.message);
-    return cached?.fdv ?? null;
+    logger.warn('[Birdeye] getTokenOverview %s 失败: %s', address, err.message);
+    return { fdv: cached?.fdv ?? null, lp: cached?.lp ?? null };
   } finally {
     clearTimeout(timeout);
   }
@@ -248,4 +258,4 @@ function clearCache(address) {
   _fdvCache.delete(address);
 }
 
-module.exports = { getPrice, getFdv, clearCache, priceStream };
+module.exports = { getPrice, getFdv, getTokenOverview, clearCache, priceStream };
