@@ -34,6 +34,11 @@ const KLINE_SEC         = parseInt(process.env.KLINE_INTERVAL_SEC    || '15', 10
 const DRY_RUN           = (process.env.DRY_RUN || 'false') === 'true';
 const TRADE_SOL         = parseFloat(process.env.TRADE_SIZE_SOL      || '0.2');
 const MAX_TRADES        = parseInt(process.env.MAX_TRADES_PER_TOKEN  || '5',  10);
+
+// ★ 买入前 LP/FDV 检查
+const LP_FDV_MAX_RATIO  = parseFloat(process.env.LP_FDV_MAX_RATIO   || '0.6');  // LP/FDV > 此值禁止买入
+const LP_MIN_USD        = parseFloat(process.env.LP_MIN_USD          || '5000'); // LP 最低 $5k
+const LP_MAX_USD        = parseFloat(process.env.LP_MAX_USD          || '8000'); // LP 最高 $8k
 const SELL_COOLDOWN_SEC = parseInt(process.env.SELL_COOLDOWN_SEC     || '30', 10);
 
 // 全局交易记录
@@ -84,6 +89,8 @@ class TokenMonitor extends EventEmitter {
     logger.info('[Monitor]   RSI峰值回落=%s  激活≥%s  回落≥%s  底线≤%s',
       RSI_CONFIG.RSI_PEAK_DROP_ENABLED ? '开启' : '关闭',
       RSI_CONFIG.RSI_PEAK_DROP_ACTIVATE, RSI_CONFIG.RSI_PEAK_DROP_DELTA, RSI_CONFIG.RSI_PEAK_DROP_FLOOR);
+    logger.info('[Monitor]   买入LP检查: LP=$%d~$%d  LP/FDV上限=%s',
+      LP_MIN_USD, LP_MAX_USD, LP_FDV_MAX_RATIO);
   }
 
   stop() {
@@ -651,12 +658,29 @@ class TokenMonitor extends EventEmitter {
 
     // 10. 执行信号
     if (signal === 'BUY' && !state.inPosition && this._canBuy(state, now)) {
-      // ★ 买入前强制刷新 FDV 检查
-      const freshFdv = await birdeye.getFdv(address);
+      // ★ 买入前强制刷新 FDV + LP 检查
+      const overview = await birdeye.getTokenOverview(address);
+      const freshFdv = overview?.fdv ?? null;
+      const freshLp  = overview?.lp  ?? null;
+
+      // (a) FDV 下限检查
       if (freshFdv !== null && Number.isFinite(freshFdv) && freshFdv < FDV_EXIT) {
         logger.warn('[Monitor] %s 买入被拒: FDV=$%d < $%d', state.symbol, Math.round(freshFdv), FDV_EXIT);
+
+      // (b) LP/FDV 比率检查：LP/FDV > 0.6 禁止买入
+      } else if (freshFdv > 0 && freshLp !== null && Number.isFinite(freshLp) && (freshLp / freshFdv) > LP_FDV_MAX_RATIO) {
+        const ratio = (freshLp / freshFdv).toFixed(2);
+        logger.warn('[Monitor] %s 买入被拒: LP/FDV=%s > %s (LP=$%d, FDV=$%d)',
+          state.symbol, ratio, LP_FDV_MAX_RATIO, Math.round(freshLp), Math.round(freshFdv));
+
+      // (c) LP 范围检查：LP 必须在 5k ~ 8k 之间
+      } else if (freshLp !== null && Number.isFinite(freshLp) && (freshLp < LP_MIN_USD || freshLp > LP_MAX_USD)) {
+        logger.warn('[Monitor] %s 买入被拒: LP=$%d 不在 $%d~$%d 范围内',
+          state.symbol, Math.round(freshLp), LP_MIN_USD, LP_MAX_USD);
+
       } else {
-        state.fdv = freshFdv ?? state.fdv;  // 更新最新 FDV
+        state.fdv = freshFdv ?? state.fdv;
+        state.lp  = freshLp  ?? state.lp;
         await this._doBuy(state, price, reason);
       }
     } else if (signal === 'SELL' && state.inPosition && !state._selling) {
