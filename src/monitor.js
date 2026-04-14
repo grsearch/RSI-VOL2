@@ -29,6 +29,7 @@ const heliusWs  = require('./heliusWs');
 
 const MONITOR_MINUTES   = parseInt(process.env.TOKEN_MAX_AGE_MINUTES || '60', 10);
 const FDV_EXIT          = parseFloat(process.env.FDV_EXIT_USD        || '10000');
+const FDV_BUY_MIN       = parseFloat(process.env.FDV_BUY_MIN_USD     || '50000'); // 买入前 FDV 须 ≥ 此值
 const POLL_SEC          = parseInt(process.env.PRICE_POLL_SEC        || '1',  10);
 const KLINE_SEC         = parseInt(process.env.KLINE_INTERVAL_SEC    || '15', 10);
 const DRY_RUN           = (process.env.DRY_RUN || 'false') === 'true';
@@ -656,8 +657,8 @@ class TokenMonitor extends EventEmitter {
       const freshFdv = overview?.fdv ?? null;
       const freshLp  = overview?.lp  ?? null;
 
-      if (freshFdv !== null && Number.isFinite(freshFdv) && freshFdv < FDV_EXIT) {
-        logger.warn('[Monitor] %s 买入被拒: FDV=$%d < $%d', state.symbol, Math.round(freshFdv), FDV_EXIT);
+      if (freshFdv !== null && Number.isFinite(freshFdv) && freshFdv < FDV_BUY_MIN) {
+        logger.warn('[Monitor] %s 买入被拒: FDV=$%d < $%d', state.symbol, Math.round(freshFdv), FDV_BUY_MIN);
       } else {
         state.fdv = freshFdv ?? state.fdv;
         state.lp  = freshLp  ?? state.lp;
