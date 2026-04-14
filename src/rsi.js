@@ -40,7 +40,7 @@ const SKIP_FIRST_CANDLES  = parseInt(process.env.SKIP_FIRST_CANDLES   || '8', 10
 
 // 止盈止损
 const TAKE_PROFIT_PCT = parseFloat(process.env.TAKE_PROFIT_PCT || '50');
-const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-20');
+const STOP_LOSS_PCT   = parseFloat(process.env.STOP_LOSS_PCT   || '-30');
 
 // 移动止损（Trailing Stop）
 const TRAILING_STOP_ENABLED  = (process.env.TRAILING_STOP_ENABLED  || 'true') === 'true';
