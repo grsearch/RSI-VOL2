@@ -27,6 +27,22 @@ const TRADE_SOL        = parseFloat(process.env.TRADE_SIZE_SOL || '0.2');
 const SLIPPAGE_MAX_BPS = parseInt(process.env.SLIPPAGE_MAX_BPS || '2000');
 const MAX_RETRY        = parseInt(process.env.TRADE_MAX_RETRY  || '3');  // 止损时重试少一些
 
+// ── DEX 路由限制 ────────────────────────────────────────────────
+// 强制只走 Pump.fun AMM (PumpSwap)，避免路由到 Meteora 等无池子的 DEX。
+//
+// 策略（双保险）：
+//   1. excludeRouters: 禁用 JupiterZ/DFlow/OKX（它们不受 excludeDexes 控制）
+//      只保留 iris（Metis 路由引擎），这样 excludeDexes 才能完全生效
+//   2. excludeDexes: 在 iris 路由中排除所有非 Pump 的 DEX
+//
+// ⚠️ Ultra API 没有 dexes 白名单参数，只能用 excludeDexes 黑名单
+// 如需放开限制，设 EXCLUDE_DEXES='' 且 EXCLUDE_ROUTERS=''
+const EXCLUDE_DEXES = process.env.EXCLUDE_DEXES
+  ?? 'Meteora,Meteora DLMM,Raydium,Raydium CLMM,Raydium CP,Orca V2,Whirlpool,Openbook,1DEX,Aldrin,Aldrin V2,Bonkswap,Sanctum Infinity,Obric V2,Virtuals';
+const EXCLUDE_ROUTERS = process.env.EXCLUDE_ROUTERS ?? 'jupiterz,dflow,okx';
+// 最大允许 price impact（超过此值拒绝执行，防止磨损过大）
+const MAX_PRICE_IMPACT_PCT = parseFloat(process.env.MAX_PRICE_IMPACT_PCT || '20');
+
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY || '';
 const HELIUS_RPC_URL = process.env.HELIUS_RPC_URL || '';
 const HELIUS_GATEKEEPER_URL = process.env.HELIUS_GATEKEEPER_URL || '';
@@ -48,6 +64,8 @@ function getConnection() {
     const url = getRpcUrl();
     const safeUrl = url.replace(/api-key=[a-f0-9-]+/i, 'api-key=***');
     logger.info('[Trader] RPC: %s', safeUrl);
+    logger.info('[Trader] DEX路由: excludeDexes=%s | excludeRouters=%s | maxPriceImpact=%.0f%%',
+      EXCLUDE_DEXES || '(无)', EXCLUDE_ROUTERS || '(无)', MAX_PRICE_IMPACT_PCT);
     _connection = new Connection(url, {
       commitment: 'confirmed',
       confirmTransactionInitialTimeout: 30000,
@@ -83,6 +101,15 @@ async function getSwapOrder({ inputMint, outputMint, amount, slippageBps }) {
     slippageBps: (slippageBps ?? SLIPPAGE_BPS).toString(),
     taker:       getKeypair().publicKey.toBase58(),
   });
+
+  // ── DEX 路由限制：excludeRouters + excludeDexes 双保险
+  if (EXCLUDE_ROUTERS) {
+    params.set('excludeRouters', EXCLUDE_ROUTERS);
+  }
+  if (EXCLUDE_DEXES) {
+    params.set('excludeDexes', EXCLUDE_DEXES);
+  }
+
   const url = `${JUP_API}/ultra/v1/order?${params}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
@@ -92,7 +119,18 @@ async function getSwapOrder({ inputMint, outputMint, amount, slippageBps }) {
       const text = await res.text();
       throw new Error(`Ultra order failed: ${res.status} ${text}`);
     }
-    return res.json();
+    const order = await res.json();
+
+    // ── 记录路由信息，便于排查磨损问题
+    if (order.routePlan && order.routePlan.length > 0) {
+      const routeLabels = order.routePlan.map(r =>
+        `${r.swapInfo?.label || '?'}(${r.percent}%)`
+      ).join(' → ');
+      logger.info('[Trader] 路由: %s | priceImpact=%s',
+        routeLabels, order.priceImpactPct ?? order.priceImpact ?? '?');
+    }
+
+    return order;
   } finally {
     clearTimeout(timeout);
   }
@@ -217,6 +255,17 @@ async function executeWithRetry(orderFn, isStopLoss = false) {
       const order = await orderFn(slippage);
       if (!order.transaction) {
         throw new Error(`Ultra order 缺少 transaction 字段`);
+      }
+
+      // ── Price Impact 防护：拒绝磨损过大的路由 ──
+      const priceImpact = Math.abs(parseFloat(order.priceImpactPct || order.priceImpact || '0'));
+      if (priceImpact > MAX_PRICE_IMPACT_PCT) {
+        const routeLabels = (order.routePlan || []).map(r =>
+          `${r.swapInfo?.label || '?'}(${r.percent}%)`
+        ).join(' → ');
+        logger.error('[Trader] ❌ 拒绝执行: priceImpact=%.1f%% > 阈值%.1f%% | 路由=%s',
+          priceImpact, MAX_PRICE_IMPACT_PCT, routeLabels);
+        throw new Error(`priceImpact ${priceImpact.toFixed(1)}% 超过阈值 ${MAX_PRICE_IMPACT_PCT}%，可能路由到无流动性池子`);
       }
 
       const signed = signTx(order.transaction);
